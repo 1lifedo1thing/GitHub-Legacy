@@ -1,4 +1,5 @@
 #import "PullRequestDetailViewController.h"
+#import "GHCompat.h"
 #import "AppDelegate.h"
 #import "GHThemeManager.h"
 #import "GHAPIClient.h"
@@ -96,17 +97,12 @@
 - (NSString *)displayDateFromISOString:(NSString *)isoString {
     if (isoString.length == 0) return nil;
 
-    NSDateFormatter *isoFormatter = [[NSDateFormatter alloc] init];
-    isoFormatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-    isoFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    isoFormatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSDateFormatter *isoFormatter = GHISODateFormatter();
 
     NSDate *date = [isoFormatter dateFromString:isoString];
     if (!date) return nil;
 
-    NSDateFormatter *displayFormatter = [[NSDateFormatter alloc] init];
-    displayFormatter.dateStyle = NSDateFormatterMediumStyle;
-    displayFormatter.timeStyle = NSDateFormatterShortStyle;
+    NSDateFormatter *displayFormatter = GHMediumShortDateFormatter();
     return [displayFormatter stringFromDate:date];
 }
 
@@ -365,6 +361,18 @@
             listVC.ownerLogin = issueListOwner;
             listVC.repoName = issueListRepo;
             [self.navigationController pushViewController:listVC animated:YES];
+            return NO;
+        }
+
+        NSString *latestOwner, *latestRepo;
+        if ([RepoDetailViewController latestReleaseInfoFromURL:request.URL ownerLogin:&latestOwner repoName:&latestRepo]) {
+            [RepoDetailViewController pushLatestReleaseForOwnerLogin:latestOwner repoName:latestRepo fromViewController:self];
+            return NO;
+        }
+
+        NSString *tagOwner, *tagRepo, *tagName;
+        if ([RepoDetailViewController releaseByTagInfoFromURL:request.URL ownerLogin:&tagOwner repoName:&tagRepo tag:&tagName]) {
+            [RepoDetailViewController pushReleaseForOwnerLogin:tagOwner repoName:tagRepo tag:tagName fromViewController:self];
             return NO;
         }
 

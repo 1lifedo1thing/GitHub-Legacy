@@ -2,7 +2,7 @@
 
 # GitHub Legacy
 
-![Platform](https://img.shields.io/badge/platform-iOS%206%E2%80%9310-lightgrey)
+![Platform](https://img.shields.io/badge/platform-iOS%205%E2%80%9310-lightgrey)
 ![Language](https://img.shields.io/badge/language-Objective--C-blue)
 ![Build](https://img.shields.io/badge/build-Theos-orange)
 [![Release](https://img.shields.io/github/v/release/kitalev/GitHub-Legacy?label=release)](https://github.com/kitalev/GitHub-Legacy/releases/latest)
@@ -12,7 +12,7 @@
 
 ---
 
-Лёгкий нативный клиент GitHub для iOS 6–10: репозитории, README, issues, pull request'ы, коммиты и релизы — без Safari и без официального приложения, которое на этих версиях уже не запустить.
+Лёгкий нативный клиент GitHub для iOS 5–10: репозитории, README, issues, pull request'ы, коммиты и релизы — без Safari и без официального приложения, которое на этих версиях уже не запустить.
 
 ## Возможности
 
@@ -50,7 +50,7 @@ dpkg -i com.githublegacy.app_iphoneos-arm.deb
 export THEOS=/opt/theos
 ```
 
-Также понадобится Clang-toolchain с таргетингом на iOS (например, `$THEOS/toolchain/linux/iphone/bin`) и iOS SDK ≥ 6.0 в `$THEOS/sdks/`. Подойдёт любой SDK начиная с 6.0, так как `MinimumOSVersion` в `Info.plist` уже ограничивает приложение устройствами с iOS 6+ во время выполнения.
+Также понадобится Clang-toolchain с таргетингом на iOS (например, `$THEOS/toolchain/linux/iphone/bin`) и iOS SDK ≥ 5.0 в `$THEOS/sdks/`. Подойдёт любой SDK начиная с 5.0, так как `MinimumOSVersion` в `Info.plist` уже ограничивает приложение устройствами с iOS 5+ во время выполнения.
 
 ```bash
 # .deb (несандбоксная сборка, для джейлбрейк-устройств через Cydia)

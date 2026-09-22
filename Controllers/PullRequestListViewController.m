@@ -1,4 +1,6 @@
 #import "PullRequestListViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "PullRequestDetailViewController.h"
 #import "GHAPIClient.h"
 #import "GHIconRenderer.h"
@@ -8,7 +10,7 @@
 
 static NSString * const kPullRequestCellID = @"PullRequestCell";
 
-@interface PullRequestListViewController ()
+@interface PullRequestListViewController () <UISearchBarDelegate>
 @property (nonatomic, strong) NSMutableArray *openPullRequests;
 @property (nonatomic, strong) NSMutableArray *closedPullRequests;
 @property (nonatomic, assign) BOOL openLoaded;
@@ -24,6 +26,11 @@ static NSString * const kPullRequestCellID = @"PullRequestCell";
 @property (nonatomic, assign) BOOL closedLoadingMore;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, strong) UISegmentedControl *segmentedControl;
+@property (nonatomic, strong) UISearchBar *searchBar;
+@property (nonatomic, copy) NSString *searchQuery;
+@property (nonatomic, strong) NSMutableArray *searchResults;
+@property (nonatomic, assign) BOOL searchAttempted;
+@property (nonatomic, assign) BOOL searchLoading;
 @property (nonatomic, strong) UIView *headerView;
 @end
 
@@ -69,18 +76,29 @@ static NSString * const kPullRequestCellID = @"PullRequestCell";
     self.segmentedControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [self.segmentedControl addTarget:self action:@selector(segmentChanged) forControlEvents:UIControlEventValueChanged];
 
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 46)];
+    self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 46, self.view.bounds.size.width, 44)];
+    self.searchBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    self.searchBar.placeholder = GHL(@"Поиск по pull request'ам");
+    self.searchBar.delegate = self;
+
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 90)];
     headerView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     headerView.backgroundColor = [UIColor colorWithWhite:0.94 alpha:1.0];
     [headerView addSubview:self.segmentedControl];
+    [headerView addSubview:self.searchBar];
     self.tableView.tableHeaderView = headerView;
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     self.spinner.hidesWhenStopped = YES;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.spinner];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(reloadCurrentTab) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(reloadCurrentTab) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(reloadCurrentTab) forControlEvents:UIControlEventValueChanged];
+    }
 
     self.headerView = headerView;
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -104,7 +122,22 @@ static NSString * const kPullRequestCellID = @"PullRequestCell";
     self.tableView.separatorColor = GHSeparatorColor();
     self.spinner.activityIndicatorViewStyle = GHSpinnerStyle();
     self.headerView.backgroundColor = dark ? [UIColor colorWithWhite:0.13 alpha:1.0] : [UIColor colorWithWhite:0.94 alpha:1.0];
+
+    self.searchBar.barStyle = dark ? UIBarStyleBlack : UIBarStyleDefault;
+    self.searchBar.backgroundImage = [self solidColorImage:self.headerView.backgroundColor];
+    self.searchBar.tintColor = GHTintColor();
+
     [self.tableView reloadData];
+}
+
+- (UIImage *)solidColorImage:(UIColor *)color {
+    CGRect rect = CGRectMake(0, 0, 1, 1);
+    UIGraphicsBeginImageContextWithOptions(rect.size, NO, 0.0);
+    [color setFill];
+    UIRectFill(rect);
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
 }
 
 - (NSDictionary *)safeDictForKey:(NSString *)key inDict:(NSDictionary *)dict {
@@ -124,14 +157,87 @@ static NSString * const kPullRequestCellID = @"PullRequestCell";
 
 - (BOOL)isMerged:(NSDictionary *)pr {
     id mergedAt = pr[@"merged_at"];
-    return mergedAt != nil && ![mergedAt isKindOfClass:[NSNull class]];
+    if (mergedAt != nil && ![mergedAt isKindOfClass:[NSNull class]]) return YES;
+
+    id nested = pr[@"pull_request"];
+    if ([nested isKindOfClass:[NSDictionary class]]) {
+        id nestedMergedAt = nested[@"merged_at"];
+        return nestedMergedAt != nil && ![nestedMergedAt isKindOfClass:[NSNull class]];
+    }
+
+    return NO;
 }
 
 - (BOOL)isOpenTabSelected {
     return self.segmentedControl.selectedSegmentIndex == 0;
 }
 
+#pragma mark - UISearchBarDelegate
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    self.searchQuery = searchText;
+
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performServerSearch) object:nil];
+    if (searchText.length == 0) {
+        self.searchResults = nil;
+        self.searchAttempted = NO;
+        self.searchLoading = NO;
+        [self.tableView reloadData];
+        return;
+    }
+
+    [self performSelector:@selector(performServerSearch) withObject:nil afterDelay:0.4];
+}
+
+- (void)performServerSearch {
+    NSString *query = self.searchQuery;
+    if (query.length == 0) return;
+
+    NSString *stateQualifier = [self isOpenTabSelected] ? @"is:open" : @"is:closed";
+    NSString *scopedQuery = [NSString stringWithFormat:@"repo:%@/%@ is:pr %@ %@",
+                              self.ownerLogin, self.repoName, stateQualifier, query];
+
+    self.searchLoading = YES;
+    [self.tableView reloadData];
+
+    __weak typeof(self) weakSelf = self;
+    NSString *requestQuery = self.searchQuery;
+    [[GHAPIClient sharedClient] searchIssuesAndPullRequestsWithQuery:scopedQuery completion:^(id jsonObject, NSError *error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (![strongSelf.searchQuery isEqualToString:requestQuery]) return;
+
+        strongSelf.searchLoading = NO;
+        strongSelf.searchAttempted = YES;
+
+        NSArray *items = [jsonObject isKindOfClass:[NSDictionary class]] ? jsonObject[@"items"] : nil;
+        strongSelf.searchResults = [NSMutableArray arrayWithArray:[items isKindOfClass:[NSArray class]] ? items : @[]];
+        [strongSelf.tableView reloadData];
+    }];
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [searchBar resignFirstResponder];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    searchBar.text = nil;
+    self.searchQuery = nil;
+    self.searchResults = nil;
+    self.searchAttempted = NO;
+    self.searchLoading = NO;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performServerSearch) object:nil];
+    [searchBar resignFirstResponder];
+    [self.tableView reloadData];
+}
+
 - (void)segmentChanged {
+    if (self.searchQuery.length > 0) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performServerSearch) object:nil];
+        [self performServerSearch];
+        [self.tableView reloadData];
+        return;
+    }
     [self loadStateIfNeeded:[self isOpenTabSelected] ? @"open" : @"closed"];
     [self.tableView reloadData];
 }
@@ -156,7 +262,7 @@ static const NSInteger kPullRequestsDisplayBatchSize = 25;
 - (void)loadStateIfNeeded:(NSString *)state {
     BOOL isOpen = [state isEqualToString:@"open"];
     if (isOpen ? self.openLoaded : self.closedLoaded) {
-        [self.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
         return;
     }
 
@@ -199,7 +305,7 @@ static const NSInteger kPullRequestsDisplayBatchSize = 25;
 
         if (error) {
             [strongSelf.spinner stopAnimating];
-            [strongSelf.refreshControl endRefreshing];
+            if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
             if (isOpen) {
                 strongSelf.openLoadAttempted = YES;
                 strongSelf.openLoadingMore = NO;
@@ -259,22 +365,20 @@ static const NSInteger kPullRequestsDisplayBatchSize = 25;
         [target addObjectsFromArray:accumulator];
 
         [strongSelf.spinner stopAnimating];
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
         [strongSelf.tableView reloadData];
     }];
 }
 
 - (NSMutableArray *)visiblePullRequests {
+    if (self.searchQuery.length > 0) return self.searchResults ?: [NSMutableArray array];
     return [self isOpenTabSelected] ? self.openPullRequests : self.closedPullRequests;
 }
 
 - (NSString *)relativeDateStringFromISOString:(NSString *)isoString {
     if (isoString.length == 0) return @"";
 
-    NSDateFormatter *isoFormatter = [[NSDateFormatter alloc] init];
-    isoFormatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-    isoFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    isoFormatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSDateFormatter *isoFormatter = GHISODateFormatter();
 
     NSDate *date = [isoFormatter dateFromString:isoString];
     if (!date) return @"";
@@ -316,7 +420,11 @@ static const NSInteger kPullRequestsDisplayBatchSize = 25;
         cell.textLabel.font = [UIFont systemFontOfSize:15];
         cell.textLabel.textColor = GHSecondaryTextColor();
         cell.textLabel.numberOfLines = 1;
-        if (!attempted) {
+        if (self.searchQuery.length > 0) {
+            cell.textLabel.text = self.searchLoading ? GHL(@"Поиск…")
+                                 : self.searchAttempted ? GHL(@"Ничего не найдено")
+                                 : GHL(@"Поиск…");
+        } else if (!attempted) {
             cell.textLabel.text = GHL(@"Загрузка…");
         } else {
             cell.textLabel.text = wantOpen ? GHL(@"Открытых pull request'ов нет") : GHL(@"Закрытых pull request'ов нет");
@@ -364,6 +472,7 @@ static const NSInteger kPullRequestsDisplayBatchSize = 25;
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.searchQuery.length > 0) return;
     NSMutableArray *pullRequests = [self visiblePullRequests];
     if (pullRequests.count == 0 || indexPath.row != (NSInteger)pullRequests.count - 1) return;
     [self loadMoreIfNeededForState:[self isOpenTabSelected] ? @"open" : @"closed"];

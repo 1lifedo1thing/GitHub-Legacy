@@ -7,13 +7,29 @@
 #import "IssueListViewController.h"
 #import "RepoDetailViewController.h"
 #import "RepoOverviewViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 
-@interface CommitDetailViewController ()
+@interface CommitDetailViewController () <UIScrollViewDelegate>
 @property (nonatomic, strong) UIWebView *webView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
+@property (nonatomic, strong) GHLegacyRefreshControl *legacyRefreshControl;
 
 @property (nonatomic, copy) NSString *lastLoadedHTML;
+@property (nonatomic, strong) NSDictionary *lastCommitJSON;
+
+@property (nonatomic, strong) UIView *stickyHeaderView;
+@property (nonatomic, assign) BOOL stickyChevronOpen;
+@property (nonatomic, assign) CGFloat pendingSnapTop;
+@property (nonatomic, assign) BOOL gh_suppressStickyHeaderUpdates;
+@property (nonatomic, strong) UILabel *stickyNameLabel;
+@property (nonatomic, strong) UILabel *stickyStatusLabel;
+@property (nonatomic, strong) UILabel *stickyAddLabel;
+@property (nonatomic, strong) UILabel *stickyDelLabel;
+@property (nonatomic, strong) NSArray *fileSectionMetrics;
+@property (nonatomic, assign) NSInteger stickyFileIndex;
+@property (nonatomic, strong) UIView *stickyChevronView;
 @end
 
 @implementation CommitDetailViewController
@@ -58,6 +74,10 @@
                                               selector:@selector(handleAppWillEnterForeground)
                                                   name:kGHAppWillEnterForegroundNotification
                                                 object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                              selector:@selector(handleThemeDidChange)
+                                                  name:kGHThemeDidChangeNotification
+                                                object:nil];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:GHSpinnerStyle()];
     self.spinner.hidesWhenStopped = YES;
@@ -96,6 +116,7 @@
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf.spinner stopAnimating];
         [strongSelf.refreshControl endRefreshing];
+        [strongSelf.legacyRefreshControl endRefreshing];
 
         if (error || ![jsonObject isKindOfClass:[NSDictionary class]]) {
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:GHL(@"Ошибка")
@@ -109,6 +130,7 @@
 
         NSString *html = [strongSelf htmlForCommit:jsonObject];
         strongSelf.lastLoadedHTML = html;
+        strongSelf.lastCommitJSON = jsonObject;
         [strongSelf.webView loadHTMLString:html baseURL:nil];
     }];
 }
@@ -125,21 +147,382 @@
     self.webView.backgroundColor = GHWebViewBackgroundColor();
     [self.view addSubview:self.webView];
 
-    if (self.refreshControl == nil) {
-        self.refreshControl = [[UIRefreshControl alloc] init];
-        [self.refreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        if (self.refreshControl == nil) {
+            self.refreshControl = [[UIRefreshControl alloc] init];
+            [self.refreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+        }
+        [self.webView.scrollView addSubview:self.refreshControl];
+    } else if (self.legacyRefreshControl == nil) {
+        self.legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.webView.scrollView];
+        [self.legacyRefreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+        self.webView.scrollView.delegate = self;
     }
-    [self.webView.scrollView addSubview:self.refreshControl];
+
+    [self installStickyHeaderIfNeeded];
+}
+
+#pragma mark - Sticky file header (iOS 5 fallback for position:sticky)
+
+- (BOOL)gh_needsNativeStickyHeader {
+    return !GHPullToRefreshAvailable();
+}
+
+- (void)installStickyHeaderIfNeeded {
+    if (![self gh_needsNativeStickyHeader]) return;
+    if (self.stickyHeaderView != nil) return;
+
+    self.stickyFileIndex = NSNotFound;
+
+    BOOL dark = [GHThemeManager sharedManager].darkModeEnabled;
+
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 44)];
+    header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    header.backgroundColor = dark ? [UIColor colorWithWhite:0.11 alpha:1.0]
+                                  : [UIColor colorWithRed:0.965 green:0.973 blue:0.980 alpha:1.0];
+    header.hidden = YES;
+    header.userInteractionEnabled = YES;
+
+    UIColor *lineColor = dark ? [UIColor colorWithWhite:0.2 alpha:1.0]
+                              : [UIColor colorWithWhite:0.87 alpha:1.0];
+
+    UIView *topLine = [[UIView alloc] initWithFrame:CGRectMake(0, 0, header.bounds.size.width, 1)];
+    topLine.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    topLine.backgroundColor = lineColor;
+    [header addSubview:topLine];
+
+    UIView *bottomLine = [[UIView alloc] initWithFrame:CGRectMake(0, 43, header.bounds.size.width, 1)];
+    bottomLine.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
+    bottomLine.backgroundColor = lineColor;
+    [header addSubview:bottomLine];
+
+    UIView *chevron = [[UIView alloc] initWithFrame:CGRectMake(13, 12, 9, 9)];
+    chevron.backgroundColor = [UIColor clearColor];
+    UIView *right = [[UIView alloc] initWithFrame:CGRectMake(7, 0, 2, 9)];
+    UIView *bottom = [[UIView alloc] initWithFrame:CGRectMake(0, 7, 9, 2)];
+    UIColor *chevronColor = dark ? [UIColor colorWithWhite:0.55 alpha:1.0]
+                                 : [UIColor colorWithRed:0.416 green:0.451 blue:0.494 alpha:1.0];
+    right.backgroundColor = chevronColor;
+    bottom.backgroundColor = chevronColor;
+    [chevron addSubview:right];
+    [chevron addSubview:bottom];
+    chevron.transform = CGAffineTransformMakeRotation(M_PI_4);
+    [header addSubview:chevron];
+
+    UILabel *nameLabel = [[UILabel alloc] initWithFrame:CGRectMake(30, 4, header.bounds.size.width - 42, 18)];
+    nameLabel.backgroundColor = [UIColor clearColor];
+    nameLabel.font = [UIFont boldSystemFontOfSize:13];
+    nameLabel.textColor = dark ? [UIColor colorWithWhite:0.85 alpha:1.0] : [UIColor blackColor];
+    [header addSubview:nameLabel];
+
+    UILabel *statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(30, 4, header.bounds.size.width - 42, 18)];
+    statusLabel.backgroundColor = [UIColor clearColor];
+    statusLabel.font = [UIFont systemFontOfSize:13];
+    statusLabel.textColor = dark ? [UIColor colorWithWhite:0.6 alpha:1.0] : [UIColor colorWithWhite:0.4 alpha:1.0];
+    [header addSubview:statusLabel];
+
+    UILabel *addLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    addLabel.backgroundColor = [UIColor clearColor];
+    addLabel.font = [UIFont systemFontOfSize:12];
+    addLabel.textColor = [UIColor colorWithRed:0.133 green:0.525 blue:0.227 alpha:1.0];
+    [header addSubview:addLabel];
+
+    UILabel *delLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    delLabel.backgroundColor = [UIColor clearColor];
+    delLabel.font = [UIFont systemFontOfSize:12];
+    delLabel.textColor = [UIColor colorWithRed:0.796 green:0.141 blue:0.192 alpha:1.0];
+    [header addSubview:delLabel];
+
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                          action:@selector(handleStickyHeaderTap)];
+    [header addGestureRecognizer:tap];
+
+    self.stickyChevronView = chevron;
+    self.stickyNameLabel = nameLabel;
+    self.stickyStatusLabel = statusLabel;
+    self.stickyAddLabel = addLabel;
+    self.stickyDelLabel = delLabel;
+    self.stickyHeaderView = header;
+    [self.view addSubview:header];
+
+    self.webView.scrollView.delegate = self;
+}
+
+- (void)refreshFileSectionMetrics {
+    if (![self gh_needsNativeStickyHeader] || self.webView == nil) return;
+
+    NSString *js =
+        @"(function(){"
+         "var out=[];"
+         "var hs=document.getElementsByClassName('file-header');"
+         "for(var i=0;i<hs.length;i++){"
+         "var h=hs[i];var top=0;var n=h;"
+         "while(n){top+=n.offsetTop;n=n.offsetParent;}"
+         "var sec=h.parentNode;"
+         "var nameEl=h.getElementsByClassName('file-name')[0];"
+         "var name='';"
+         "if(nameEl){"
+         "for(var c=0;c<nameEl.childNodes.length;c++){"
+         "var node=nameEl.childNodes[c];"
+         "if(node.nodeType===3){name+=node.nodeValue;}"
+         "}"
+         "}"
+         "name=name.replace(/^\\s+|\\s+$/g,'').replace(/[\\r\\n]+/g,' ');"
+         "var statusEl=h.getElementsByClassName('file-status')[0];"
+         "var status=statusEl?(statusEl.innerText||statusEl.textContent):'';"
+         "var addEl=h.getElementsByClassName('stat-add')[0];"
+         "var delEl=h.getElementsByClassName('stat-del')[0];"
+         "var adds=addEl?addEl.innerText||addEl.textContent:'';"
+         "var dels=delEl?delEl.innerText||delEl.textContent:'';"
+         "var content=document.getElementById('file-content-'+i);"
+         "var open=(content&&content.style.display!=='none')?'1':'0';"
+         "out.push([top,top+sec.offsetHeight,h.offsetHeight,"
+         "name,status,adds,dels,open].join(SEP_U));"
+         "}"
+         "return out.join(SEP_R);"
+         "})()";
+
+    NSString *recordSep = [NSString stringWithFormat:@"%C", (unichar)0x001e];
+    NSString *unitSep = [NSString stringWithFormat:@"%C", (unichar)0x001f];
+    js = [js stringByReplacingOccurrencesOfString:@"SEP_U"
+                                       withString:[NSString stringWithFormat:@"String.fromCharCode(%d)", 0x1f]];
+    js = [js stringByReplacingOccurrencesOfString:@"SEP_R"
+                                       withString:[NSString stringWithFormat:@"String.fromCharCode(%d)", 0x1e]];
+
+    NSString *raw = [self.webView stringByEvaluatingJavaScriptFromString:js];
+    if (raw.length == 0) {
+        self.fileSectionMetrics = nil;
+        [self updateStickyHeader];
+        return;
+    }
+
+    NSMutableArray *metrics = [NSMutableArray array];
+    for (NSString *row in [raw componentsSeparatedByString:recordSep]) {
+        NSArray *parts = [row componentsSeparatedByString:unitSep];
+        if (parts.count < 8) continue;
+        [metrics addObject:@{
+            @"top": @([[parts objectAtIndex:0] doubleValue]),
+            @"bottom": @([[parts objectAtIndex:1] doubleValue]),
+            @"height": @([[parts objectAtIndex:2] doubleValue]),
+            @"name": [parts objectAtIndex:3],
+            @"status": [parts objectAtIndex:4],
+            @"adds": [parts objectAtIndex:5],
+            @"dels": [parts objectAtIndex:6],
+            @"open": @([[parts objectAtIndex:7] boolValue]),
+        }];
+    }
+    self.fileSectionMetrics = metrics;
+    [self updateStickyHeader];
+}
+
+- (void)gh_scheduleStickyDomIndexSync {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(gh_syncStickyDomIndex)
+                                               object:nil];
+    [self performSelector:@selector(gh_syncStickyDomIndex) withObject:nil afterDelay:0.06];
+}
+
+- (void)gh_syncStickyDomIndex {
+    if (self.webView == nil) return;
+    NSInteger domIndex = (self.stickyFileIndex == NSNotFound) ? -1 : self.stickyFileIndex;
+    [self.webView stringByEvaluatingJavaScriptFromString:
+        [NSString stringWithFormat:@"ghSetStickyDomIndex(%ld);", (long)domIndex]];
+}
+
+- (void)updateStickyHeader {
+    if (self.gh_suppressStickyHeaderUpdates) return;
+    if (![self gh_needsNativeStickyHeader] || self.stickyHeaderView == nil) return;
+
+    NSArray *metrics = self.fileSectionMetrics;
+    if (metrics.count == 0) {
+        self.stickyHeaderView.hidden = YES;
+        self.stickyFileIndex = NSNotFound;
+        return;
+    }
+
+    CGFloat offsetY = self.webView.scrollView.contentOffset.y;
+
+    NSInteger activeIndex = NSNotFound;
+    CGFloat pushUp = 0;
+
+    for (NSUInteger i = 0; i < metrics.count; i++) {
+        NSDictionary *m = [metrics objectAtIndex:i];
+        if (![[m objectForKey:@"open"] boolValue]) continue;
+
+        CGFloat top = [[m objectForKey:@"top"] doubleValue];
+        CGFloat bottom = [[m objectForKey:@"bottom"] doubleValue];
+        CGFloat height = [[m objectForKey:@"height"] doubleValue];
+
+        if (offsetY >= top && offsetY < bottom) {
+            activeIndex = (NSInteger)i;
+
+            CGFloat remaining = bottom - offsetY;
+            if (remaining < height) pushUp = height - remaining;
+            break;
+        }
+    }
+
+    if (activeIndex == NSNotFound) {
+        self.stickyHeaderView.hidden = YES;
+        if (self.stickyFileIndex != NSNotFound) {
+            [self gh_scheduleStickyDomIndexSync];
+        }
+        self.stickyFileIndex = NSNotFound;
+        return;
+    }
+
+    NSDictionary *activeMetrics = [metrics objectAtIndex:activeIndex];
+    BOOL activeOpen = [[activeMetrics objectForKey:@"open"] boolValue];
+
+    if (activeIndex != self.stickyFileIndex) {
+        self.stickyFileIndex = activeIndex;
+
+        [self gh_scheduleStickyDomIndexSync];
+
+        [self applyStickyChevronOpen:activeOpen animated:YES];
+        self.stickyChevronOpen = activeOpen;
+        [self layoutStickyHeaderContentWithMetrics:activeMetrics];
+    } else if (activeOpen != self.stickyChevronOpen) {
+        [self applyStickyChevronOpen:activeOpen animated:YES];
+        self.stickyChevronOpen = activeOpen;
+        [self layoutStickyHeaderContentWithMetrics:activeMetrics];
+    }
+
+    CGRect frame = self.stickyHeaderView.frame;
+    frame.origin.y = self.webView.frame.origin.y - pushUp;
+    self.stickyHeaderView.frame = frame;
+    self.stickyHeaderView.hidden = NO;
+    [self.view bringSubviewToFront:self.stickyHeaderView];
+}
+
+- (void)layoutStickyHeaderContentWithMetrics:(NSDictionary *)m {
+    CGFloat width = self.stickyHeaderView.bounds.size.width;
+
+    NSString *name = [m objectForKey:@"name"];
+    NSString *status = [m objectForKey:@"status"];
+    NSString *adds = [m objectForKey:@"adds"];
+    NSString *dels = [m objectForKey:@"dels"];
+
+    self.stickyNameLabel.text = name;
+    CGSize nameSize = [name sizeWithFont:self.stickyNameLabel.font];
+
+    CGFloat statusMaxWidth = MAX(width - 42 - nameSize.width - 4, 0);
+    self.stickyStatusLabel.text = status;
+    self.stickyStatusLabel.frame = CGRectMake(30 + nameSize.width + 4, 4, statusMaxWidth, 18);
+    self.stickyNameLabel.frame = CGRectMake(30, 4, nameSize.width, 18);
+
+    CGFloat rightEdge = width - 12;
+
+    self.stickyDelLabel.text = dels;
+    CGSize delSize = [dels sizeWithFont:self.stickyDelLabel.font];
+    self.stickyDelLabel.frame = CGRectMake(rightEdge - delSize.width, 22, delSize.width, 16);
+
+    self.stickyAddLabel.text = adds;
+    CGSize addSize = [adds sizeWithFont:self.stickyAddLabel.font];
+    CGFloat addOrigin = rightEdge - delSize.width - (delSize.width > 0 ? 6 : 0) - addSize.width;
+    self.stickyAddLabel.frame = CGRectMake(addOrigin, 22, addSize.width, 16);
+}
+
+- (void)applyStickyChevronOpen:(BOOL)open animated:(BOOL)animated {
+
+    CGAffineTransform t = CGAffineTransformMakeRotation(open ? M_PI_4 : -M_PI_4);
+    if (!animated) {
+        self.stickyChevronView.transform = t;
+        return;
+    }
+    [UIView animateWithDuration:0.25 animations:^{
+        self.stickyChevronView.transform = t;
+    }];
+}
+
+- (void)gh_snapScrollToTop:(id)ignored {
+    self.gh_suppressStickyHeaderUpdates = NO;
+    if (self.webView == nil) return;
+
+    UIScrollView *scrollView = self.webView.scrollView;
+    if (scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating) {
+        /* the user has already taken control of scrolling since the tap;
+           forcing contentOffset here would fight their gesture and make
+           scrolling feel broken, so just back off. */
+        return;
+    }
+
+    [scrollView setContentOffset:CGPointMake(0, self.pendingSnapTop) animated:NO];
+}
+
+- (void)handleStickyHeaderTap {
+    if (self.stickyFileIndex == NSNotFound || self.webView == nil) return;
+    if (self.stickyFileIndex >= (NSInteger)self.fileSectionMetrics.count) return;
+
+    NSInteger tappedIndex = self.stickyFileIndex;
+    NSDictionary *m = [self.fileSectionMetrics objectAtIndex:tappedIndex];
+    CGFloat top = [[m objectForKey:@"top"] doubleValue];
+    BOOL wasOpen = [[m objectForKey:@"open"] boolValue];
+
+    [self applyStickyChevronOpen:!wasOpen animated:!wasOpen];
+    self.stickyChevronOpen = !wasOpen;
+
+    NSString *js = [NSString stringWithFormat:@"toggleFile(%ld);", (long)tappedIndex];
+    [self.webView stringByEvaluatingJavaScriptFromString:js];
+    [self refreshFileSectionMetrics];
+
+    self.stickyFileIndex = NSNotFound;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(gh_syncStickyDomIndex)
+                                               object:nil];
+    [self gh_syncStickyDomIndex];
+    self.gh_suppressStickyHeaderUpdates = YES;
+
+    if (wasOpen) {
+        self.stickyHeaderView.hidden = YES;
+    }
+
+    [self.webView.scrollView setContentOffset:CGPointMake(0, top) animated:NO];
+    self.gh_suppressStickyHeaderUpdates = NO;
+}
+
+#pragma mark - UIScrollViewDelegate
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    [self updateStickyHeader];
+    [self.legacyRefreshControl gh_scrollViewDidScroll];
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
+    [self.legacyRefreshControl gh_scrollViewDidEndDragging];
 }
 
 - (void)destroyWebView {
     if (self.webView == nil) return;
+    self.gh_suppressStickyHeaderUpdates = NO;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(refreshFileSectionMetrics)
+                                               object:nil];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(gh_snapScrollToTop:)
+                                               object:nil];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(gh_syncStickyDomIndex)
+                                               object:nil];
+    self.webView.scrollView.delegate = nil;
     self.webView.delegate = nil;
     [self.webView stopLoading];
     [self.webView loadHTMLString:@"" baseURL:nil];
     [self.refreshControl removeFromSuperview];
+    [self.legacyRefreshControl removeFromSuperview];
+    self.legacyRefreshControl = nil;
     [self.webView removeFromSuperview];
     self.webView = nil;
+
+    [self.stickyHeaderView removeFromSuperview];
+    self.stickyHeaderView = nil;
+    self.stickyNameLabel = nil;
+    self.stickyStatusLabel = nil;
+    self.stickyAddLabel = nil;
+    self.stickyDelLabel = nil;
+    self.stickyChevronView = nil;
+    self.fileSectionMetrics = nil;
+    self.stickyFileIndex = NSNotFound;
 }
 
 - (void)handleAppDidEnterBackground {
@@ -153,15 +536,43 @@
     [self.webView loadHTMLString:self.lastLoadedHTML baseURL:nil];
 }
 
+- (void)handleThemeDidChange {
+    if (self.lastCommitJSON == nil || self.webView == nil) return;
+
+    self.view.backgroundColor = GHBackgroundColor();
+    self.webView.backgroundColor = GHWebViewBackgroundColor();
+
+    [self.stickyHeaderView removeFromSuperview];
+    self.stickyHeaderView = nil;
+    self.stickyFileIndex = NSNotFound;
+    self.fileSectionMetrics = nil;
+    [self installStickyHeaderIfNeeded];
+
+    NSString *html = [self htmlForCommit:self.lastCommitJSON];
+    self.lastLoadedHTML = html;
+    [self.webView loadHTMLString:html baseURL:nil];
+}
+
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 #pragma mark - UIWebViewDelegate
 
+- (void)webViewDidFinishLoad:(UIWebView *)webView {
+
+    [self performSelector:@selector(refreshFileSectionMetrics) withObject:nil afterDelay:0.1];
+}
+
 - (BOOL)webView:(UIWebView *)webView
     shouldStartLoadWithRequest:(NSURLRequest *)request
                 navigationType:(UIWebViewNavigationType)navigationType {
+
+    if ([[request.URL scheme] isEqualToString:@"ghlegacy-layout"]) {
+        [self refreshFileSectionMetrics];
+        return NO;
+    }
+
     if (navigationType != UIWebViewNavigationTypeLinkClicked) {
         return YES;
     }
@@ -189,6 +600,18 @@
         listVC.ownerLogin = issueListOwner;
         listVC.repoName = issueListRepo;
         [self.navigationController pushViewController:listVC animated:YES];
+        return NO;
+    }
+
+    NSString *latestOwner, *latestRepo;
+    if ([RepoDetailViewController latestReleaseInfoFromURL:request.URL ownerLogin:&latestOwner repoName:&latestRepo]) {
+        [RepoDetailViewController pushLatestReleaseForOwnerLogin:latestOwner repoName:latestRepo fromViewController:self];
+        return NO;
+    }
+
+    NSString *tagOwner, *tagRepo, *tagName;
+    if ([RepoDetailViewController releaseByTagInfoFromURL:request.URL ownerLogin:&tagOwner repoName:&tagRepo tag:&tagName]) {
+        [RepoDetailViewController pushReleaseForOwnerLogin:tagOwner repoName:tagRepo tag:tagName fromViewController:self];
         return NO;
     }
 
@@ -456,7 +879,7 @@ static const NSInteger kDiffChunkSize = 80;
 
         ".file-section{position:relative;}"
 
-        ".file-header{background:#f6f8fa;padding:8px 12px 8px 30px;font-weight:bold;font-size:13px;border-top:1px solid #ddd;border-bottom:1px solid #ddd;word-wrap:break-word;cursor:pointer;"
+        ".file-header{background:#f6f8fa;height:44px;box-sizing:border-box;overflow:hidden;padding:4px 12px 4px 30px;font-weight:bold;font-size:13px;border-top:1px solid #ddd;border-bottom:1px solid #ddd;word-wrap:break-word;cursor:pointer;"
         "position:-webkit-sticky;position:sticky;top:0;z-index:5;}"
         ".file-header:active{background:#eaeef1;}"
         ".toggle-icon{position:absolute;left:13px;top:12px;width:7px;height:7px;border-right:2px solid #6a737d;border-bottom:2px solid #6a737d;"
@@ -468,14 +891,20 @@ static const NSInteger kDiffChunkSize = 80;
         ".stat-add{color:#22863a;}"
         ".stat-del{color:#cb2431;}"
 
-        ".file-content{-webkit-transition:opacity 0.2s ease;transition:opacity 0.2s ease;opacity:1;}"
-        ".diff-block{display:-webkit-box;display:flex;-webkit-box-orient:horizontal;font-family:Menlo,monospace;font-size:12px;line-height:1.6;border-top:1px solid #eee;}"
-        ".diff-gutter{-webkit-box-flex:0;flex:0 0 auto;background:#f6f8fa;color:#999;text-align:right;border-right:1px solid #eee;-webkit-text-size-adjust:100%;}"
+        ".file-content{opacity:1;}"
+
+        ".diff-block{position:relative;overflow:hidden;font-family:Menlo,monospace;font-size:12px;line-height:1.6;border-top:1px solid #eee;}"
+        ".diff-gutter{position:absolute;left:0;top:0;width:77px;"
+        "-webkit-box-sizing:border-box;box-sizing:border-box;"
+        "background:#f6f8fa;color:#999;text-align:right;border-right:1px solid #eee;"
+        "-webkit-text-size-adjust:100%;}"
         ".diff-gutter .ln-row{padding:1px 4px;white-space:nowrap;}"
         ".diff-gutter .ln-old,.diff-gutter .ln-new{display:inline-block;width:34px;text-align:right;vertical-align:top;}"
-        ".diff-code{-webkit-box-flex:1;flex:1 1 auto;overflow-x:auto;min-width:0;-webkit-text-size-adjust:100%;}"
 
-        ".diff-table{border-collapse:collapse;width:100%;}"
+        ".diff-code{margin-left:77px;overflow-x:auto;overflow-y:hidden;"
+        "-webkit-overflow-scrolling:touch;-webkit-text-size-adjust:100%;}"
+
+        ".diff-table{border-collapse:collapse;width:auto;min-width:100%;}"
         ".diff-table td.code-cell{white-space:pre;padding:1px 8px;}"
         ".diff-add{background:#e6ffed;color:#22863a;}"
         ".diff-del{background:#ffeef0;color:#b31d28;}"
@@ -486,6 +915,13 @@ static const NSInteger kDiffChunkSize = 80;
         ".image-preview img{max-width:100%;max-height:280px;height:auto;border:1px solid #ddd;border-radius:4px;background:#fff;}"
         ".show-more{padding:10px 12px;text-align:center;color:#0366d6;font-size:13px;font-weight:bold;background:#f6f8fa;border-top:1px solid #eee;border-bottom:1px solid #ddd;cursor:pointer;}"
         ".show-more:active{background:#eaeef1;}";
+
+    if ([self gh_needsNativeStickyHeader]) {
+        css = [css stringByReplacingOccurrencesOfString:
+            @"html,body{-webkit-text-size-adjust:100%;-webkit-overflow-scrolling:touch;}"
+                                              withString:
+            @"html,body{-webkit-text-size-adjust:100%;}"];
+    }
 
     if ([GHThemeManager sharedManager].darkModeEnabled) {
         NSString *darkOverride =
@@ -545,6 +981,7 @@ static const NSInteger kDiffChunkSize = 80;
         "var labels=btn.getAttribute('data-labels').split('|');"
         "if(labels[shown])btn.innerHTML=labels[shown];"
         "}"
+        "notifyLayoutChanged();"
         "}"
         "function fileTouchEnd(e,n){"
         "if(didMoveTooMuch(e))return;"
@@ -558,16 +995,27 @@ static const NSInteger kDiffChunkSize = 80;
         "if(isHidden){"
         "content.style.display='';"
         "void content.offsetHeight;"
-        "content.style.opacity='1';"
         "icon.style.webkitTransform='rotate(45deg)';"
         "icon.style.transform='rotate(45deg)';"
         "}else{"
-        "content.style.opacity='0';"
         "icon.style.webkitTransform='rotate(-45deg)';"
         "icon.style.transform='rotate(-45deg)';"
-        "setTimeout(function(){"
-        "if(content.style.opacity==='0'){content.style.display='none';}"
-        "},200);"
+        "content.style.display='none';"
+        "void document.body.offsetHeight;"
+        "}"
+        "notifyLayoutChanged();"
+        "}"
+        "function notifyLayoutChanged(){"
+        "var f=document.getElementById('gh-layout-ping');"
+        "if(!f){f=document.createElement('iframe');f.id='gh-layout-ping';"
+        "f.style.display='none';document.body.appendChild(f);}"
+        "f.src='ghlegacy-layout://changed?t='+new Date().getTime();"
+        "}"
+
+        "function ghSetStickyDomIndex(i){"
+        "var hs=document.getElementsByClassName('file-header');"
+        "for(var j=0;j<hs.length;j++){"
+        "hs[j].style.visibility=(j===i)?'hidden':'visible';"
         "}"
         "}";
 

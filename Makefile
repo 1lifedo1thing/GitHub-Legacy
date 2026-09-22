@@ -1,6 +1,6 @@
 export THEOS_DEVICE_IP =
 ARCHS = armv7
-TARGET = iphone:clang:9.3:6.0
+TARGET = iphone:clang:9.3:5.0
 
 include $(THEOS)/makefiles/common.mk
 
@@ -34,6 +34,10 @@ GitHubLegacy_FILES = main.m AppDelegate.m \
 	Core/GHAvatarLoader.m \
 	Core/GHThemeManager.m \
 	Core/GHIconRenderer.m \
+	Core/GHCompat.m \
+	Core/GHLegacyRefreshControl.m \
+	Core/GHFoundationCompat.m \
+	Core/GHURLRouter.m \
 	Controllers/ProfileRepoListViewController.m \
 	Controllers/GHUserListViewController.m \
 	Cells/GHStarredRepoCell.m \
@@ -47,6 +51,14 @@ GitHubLegacy_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore
 GitHubLegacy_CFLAGS = -fobjc-arc -Iinclude -IControllers -ICells -ICore
 
 include $(THEOS_MAKE_PATH)/application.mk
+
+
+TWEAK_NAME = GitHubLegacySafariRedirect
+GitHubLegacySafariRedirect_FILES = Tweak/Tweak.xm
+GitHubLegacySafariRedirect_FRAMEWORKS = UIKit
+GitHubLegacySafariRedirect_CFLAGS = -fobjc-arc
+
+include $(THEOS_MAKE_PATH)/tweak.mk
 
 after-install::
 	install.exec "killall -9 SpringBoard"

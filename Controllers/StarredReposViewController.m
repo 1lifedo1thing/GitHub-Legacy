@@ -1,4 +1,6 @@
 #import "StarredReposViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "GHAPIClient.h"
 #import "GHAuthManager.h"
 #import "RepoOverviewViewController.h"
@@ -28,7 +30,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self.tableView registerClass:[GHStarredRepoCell class] forCellReuseIdentifier:@"StarredCell"];
+    [self.tableView gh_registerCellClass:[GHStarredRepoCell class] forCellReuseIdentifier:@"StarredCell"];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     self.spinner.hidesWhenStopped = YES;
@@ -44,8 +46,13 @@
         self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.settingsButton];
     }
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
@@ -92,7 +99,7 @@
         [[GHAPIClient sharedClient] starredRepositoriesForUser:self.viewedLogin completion:^(id jsonObject, NSError *error) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
             [strongSelf.spinner stopAnimating];
-            [strongSelf.refreshControl endRefreshing];
+            if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
             if (!error && [jsonObject isKindOfClass:[NSArray class]]) {
                 [strongSelf.repos removeAllObjects];
                 [strongSelf.repos addObjectsFromArray:jsonObject];
@@ -105,7 +112,7 @@
     if (![GHAuthManager sharedManager].isAuthenticated) {
         [self.repos removeAllObjects];
         [self.tableView reloadData];
-        [self.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
         return;
     }
 
@@ -114,7 +121,7 @@
     [[GHAPIClient sharedClient] starredRepositoriesWithCompletion:^(id jsonObject, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf.spinner stopAnimating];
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
 
         if (error) {
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:GHL(@"Ошибка")
@@ -163,7 +170,7 @@
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    GHStarredRepoCell *cell = [tableView dequeueReusableCellWithIdentifier:@"StarredCell" forIndexPath:indexPath];
+    GHStarredRepoCell *cell = [tableView gh_dequeueCellWithIdentifier:@"StarredCell" forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
     [cell configureWithRepo:self.repos[indexPath.row]];
     return cell;

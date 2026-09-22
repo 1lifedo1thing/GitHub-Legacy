@@ -1,4 +1,5 @@
 #import "ProfileRepoListViewController.h"
+#import "GHCompat.h"
 #import "RepoOverviewViewController.h"
 #import "GHThemeManager.h"
 #import "GHLocalization.h"
@@ -17,7 +18,7 @@ static NSString * const kRepoCellID = @"RepoCell";
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kRepoCellID];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:kRepoCellID];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
@@ -45,7 +46,7 @@ static NSString * const kRepoCellID = @"RepoCell";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kRepoCellID forIndexPath:indexPath];
+    UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:kRepoCellID forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
 
     if (self.repos.count == 0) {

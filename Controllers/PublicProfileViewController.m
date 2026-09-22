@@ -1,4 +1,6 @@
 #import "PublicProfileViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import <QuartzCore/QuartzCore.h>
 #import "GHAPIClient.h"
 #import "GHAuthManager.h"
@@ -67,15 +69,20 @@ static NSString * const kProfilePinnedCellID = @"PublicProfilePinnedCell";
     [super viewDidLoad];
     self.title = self.login.length > 0 ? self.login : GHL(@"Профиль");
 
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kProfileRepoCellID];
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kProfilePinnedCellID];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:kProfileRepoCellID];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:kProfilePinnedCellID];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     self.spinner.hidesWhenStopped = YES;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.spinner];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    }
 
     [self buildHeaderSubviews];
 
@@ -170,13 +177,18 @@ static NSString * const kProfilePinnedCellID = @"PublicProfilePinnedCell";
     NSString *text = [NSString stringWithFormat:@"%@ %@", safeCount, caption];
     NSMutableAttributedString *attributed = [[NSMutableAttributedString alloc] initWithString:text];
     NSRange countRange = NSMakeRange(0, [safeCount stringValue].length);
-    [attributed addAttribute:NSFontAttributeName value:[UIFont boldSystemFontOfSize:14] range:countRange];
-    [attributed addAttribute:NSForegroundColorAttributeName value:GHPrimaryTextColor() range:countRange];
-    [attributed addAttribute:NSForegroundColorAttributeName
+    [attributed addAttribute:GHFontAttributeName() value:[UIFont boldSystemFontOfSize:14] range:countRange];
+    [attributed addAttribute:GHForegroundColorAttributeName() value:GHPrimaryTextColor() range:countRange];
+    [attributed addAttribute:GHForegroundColorAttributeName()
                         value:GHProfileHeaderSecondaryTextColor()
                         range:NSMakeRange(countRange.length, text.length - countRange.length)];
-    [button setAttributedTitle:attributed forState:UIControlStateNormal];
+    [button gh_setAttributedTitle:attributed forState:UIControlStateNormal];
     [button sizeToFit];
+}
+
+- (BOOL)isViewerOwnProfile {
+    NSString *currentLogin = [GHAuthManager sharedManager].currentUserLogin;
+    return currentLogin.length > 0 && [self.login caseInsensitiveCompare:currentLogin] == NSOrderedSame;
 }
 
 - (void)reload {
@@ -202,7 +214,7 @@ static NSString * const kProfilePinnedCellID = @"PublicProfilePinnedCell";
         [strongSelf layoutHeaderWithLoading:NO];
     }];
 
-    if ([GHAuthManager sharedManager].isAuthenticated) {
+    if ([GHAuthManager sharedManager].isAuthenticated && ![self isViewerOwnProfile]) {
         self.followStatusLoaded = NO;
         [[GHAPIClient sharedClient] checkFollowingUser:self.login completion:^(NSInteger statusCode, NSString *message, NSError *error) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -235,7 +247,7 @@ static NSString * const kProfilePinnedCellID = @"PublicProfilePinnedCell";
     [[GHAPIClient sharedClient] repositoriesForUser:self.login completion:^(id jsonObject, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf.spinner stopAnimating];
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
 
         if (error) {
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:GHL(@"Ошибка")
@@ -405,7 +417,7 @@ static NSString * const kProfilePinnedCellID = @"PublicProfilePinnedCell";
     self.statsSeparatorLabel.hidden = loading;
     self.followingStatButton.hidden = loading;
 
-    BOOL showFollowButton = !loading && [GHAuthManager sharedManager].isAuthenticated;
+    BOOL showFollowButton = !loading && [GHAuthManager sharedManager].isAuthenticated && ![self isViewerOwnProfile];
     [self updateFollowButtonAppearance];
     [self.followButton sizeToFit];
     CGFloat followButtonWidth = showFollowButton ? MAX(self.followButton.frame.size.width + 28, 130) : 0;
@@ -482,8 +494,15 @@ static NSString * const kProfilePinnedCellID = @"PublicProfilePinnedCell";
 
             strongSelf.pendingFollowersOverride = newFollowersCount;
         } else {
+            NSString *detail = message.length > 0 ? message : GHL(@"Не удалось выполнить действие");
+
+            if (!error && statusCode == 404) {
+                detail = [detail stringByAppendingFormat:@"\n\n%@",
+                    GHL(@"Возможно, у вашего токена нет прав на подписки. Для classic-токена нужен scope «user:follow», для fine-grained — разрешение «Followers».")];
+            }
+
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:GHL(@"Ошибка")
-                                                             message:message.length > 0 ? message : GHL(@"Не удалось выполнить действие")
+                                                             message:detail
                                                             delegate:nil
                                                    cancelButtonTitle:@"OK"
                                                    otherButtonTitles:nil];
@@ -569,7 +588,7 @@ static NSString * const kProfilePinnedCellID = @"PublicProfilePinnedCell";
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if ([self hasPinnedSection] && indexPath.section == [self pinnedSectionIndex]) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kProfilePinnedCellID forIndexPath:indexPath];
+        UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:kProfilePinnedCellID forIndexPath:indexPath];
         cell.backgroundColor = GHCellBackgroundColor();
         cell.textLabel.numberOfLines = 1;
 
@@ -588,7 +607,7 @@ static NSString * const kProfilePinnedCellID = @"PublicProfilePinnedCell";
         return cell;
     }
 
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kProfileRepoCellID forIndexPath:indexPath];
+    UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:kProfileRepoCellID forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
     cell.textLabel.numberOfLines = 1;
     cell.detailTextLabel.text = nil;

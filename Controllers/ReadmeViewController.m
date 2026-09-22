@@ -16,8 +16,10 @@
 #import "RepoDetailViewController.h"
 #import "RepoOverviewViewController.h"
 #import <string.h>
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 
-@interface ReadmeViewController ()
+@interface ReadmeViewController () <UIScrollViewDelegate>
 @property (nonatomic, strong) UIWebView *webView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 
@@ -26,8 +28,12 @@
 
 @property (nonatomic, assign) BOOL contentUnloadedForBackground;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
+@property (nonatomic, strong) GHLegacyRefreshControl *legacyRefreshControl;
 
 @property (nonatomic, assign) BOOL waitingForInitialScrollReveal;
+
+@property (nonatomic, strong) NSMutableArray *pendingJavaScript;
+@property (nonatomic, assign) BOOL webViewDidFinishLoading;
 @end
 
 @implementation ReadmeViewController
@@ -66,6 +72,7 @@
                                                   name:kGHLanguageDidChangeNotification
                                                 object:nil];
 
+    self.webViewDidFinishLoading = NO;
     [self.webView loadHTMLString:self.html ?: @"" baseURL:self.baseURL];
 }
 
@@ -92,13 +99,19 @@
     [self.view addSubview:self.webView];
 
     if (self.refreshHandler != nil) {
-        if (self.refreshControl == nil) {
-            self.refreshControl = [[UIRefreshControl alloc] init];
-            [self.refreshControl addTarget:self
-                                    action:@selector(handlePullToRefresh)
-                          forControlEvents:UIControlEventValueChanged];
+        if (GHPullToRefreshAvailable()) {
+            if (self.refreshControl == nil) {
+                self.refreshControl = [[UIRefreshControl alloc] init];
+                [self.refreshControl addTarget:self
+                                        action:@selector(handlePullToRefresh)
+                              forControlEvents:UIControlEventValueChanged];
+            }
+            [self.webView.scrollView addSubview:self.refreshControl];
+        } else if (self.legacyRefreshControl == nil) {
+            self.legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.webView.scrollView];
+            [self.legacyRefreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+            self.webView.scrollView.delegate = self;
         }
-        [self.webView.scrollView addSubview:self.refreshControl];
     }
 }
 
@@ -123,9 +136,22 @@
     self.webView.delegate = nil;
     self.webView.scrollView.delegate = nil;
     [self.webView stopLoading];
+    self.webViewDidFinishLoading = NO;
     [self.webView loadHTMLString:@"" baseURL:nil];
+    [self.legacyRefreshControl removeFromSuperview];
+    self.legacyRefreshControl = nil;
     [self.webView removeFromSuperview];
     self.webView = nil;
+}
+
+#pragma mark - UIScrollViewDelegate
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    [self.legacyRefreshControl gh_scrollViewDidScroll];
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
+    [self.legacyRefreshControl gh_scrollViewDidEndDragging];
 }
 
 #pragma mark - Тема
@@ -249,6 +275,7 @@
     [self installWebView];
     if (self.html.length == 0) return;
     self.hasPendingScrollRestore = YES;
+    self.webViewDidFinishLoading = NO;
     [self.webView loadHTMLString:self.html baseURL:self.baseURL];
 }
 
@@ -267,6 +294,7 @@
         self.webView.delegate = nil;
         self.webView.scrollView.delegate = nil;
         [self.webView stopLoading];
+        self.webViewDidFinishLoading = NO;
         [self.webView loadHTMLString:@"" baseURL:nil];
     }
 }
@@ -279,6 +307,9 @@
 
 - (void)webViewDidFinishLoad:(UIWebView *)webView {
     [self.spinner stopAnimating];
+
+    self.webViewDidFinishLoading = YES;
+    [self flushPendingJavaScript];
 
     self.webView.scrollView.scrollsToTop = YES;
 
@@ -340,6 +371,7 @@
 - (void)handlePullToRefresh {
     if (self.refreshHandler == nil) {
         [self.refreshControl endRefreshing];
+        [self.legacyRefreshControl endRefreshing];
         return;
     }
 
@@ -351,11 +383,13 @@
         if (strongSelf == nil) return;
 
         [strongSelf.refreshControl endRefreshing];
+        [strongSelf.legacyRefreshControl endRefreshing];
         if (freshHTML.length == 0) return;
 
         strongSelf.html = freshHTML;
         strongSelf.scrollOffsetBeforeBackgrounding = offset;
         strongSelf.hasPendingScrollRestore = YES;
+        strongSelf.webViewDidFinishLoading = NO;
         [strongSelf.webView loadHTMLString:freshHTML baseURL:strongSelf.baseURL];
     });
 }
@@ -401,6 +435,18 @@
             listVC.ownerLogin = issueListOwner;
             listVC.repoName = issueListRepo;
             [self.navigationController pushViewController:listVC animated:YES];
+            return NO;
+        }
+
+        NSString *latestOwner, *latestRepo;
+        if ([RepoDetailViewController latestReleaseInfoFromURL:request.URL ownerLogin:&latestOwner repoName:&latestRepo]) {
+            [RepoDetailViewController pushLatestReleaseForOwnerLogin:latestOwner repoName:latestRepo fromViewController:self];
+            return NO;
+        }
+
+        NSString *tagOwner, *tagRepo, *tagName;
+        if ([RepoDetailViewController releaseByTagInfoFromURL:request.URL ownerLogin:&tagOwner repoName:&tagRepo tag:&tagName]) {
+            [RepoDetailViewController pushReleaseForOwnerLogin:tagOwner repoName:tagRepo tag:tagName fromViewController:self];
             return NO;
         }
 
@@ -617,7 +663,8 @@
     __weak UIViewController *weakFromVC = fromViewController;
 
     void (^openInSafari)(void) = ^{
-        if (fallbackURL != nil) {
+        __strong UIViewController *strongFromVC = weakFromVC;
+        if (fallbackURL != nil && strongFromVC != nil) {
             [[UIApplication sharedApplication] openURL:fallbackURL];
         }
     };
@@ -634,11 +681,6 @@
         NSString *base64Content = [contentValue isKindOfClass:[NSString class]] ? contentValue : nil;
 
         if (error || base64Content.length == 0) {
-
-            NSLog(@"ReadmeViewController: не удалось открыть %@/%@/%@ в приложении (%@) — открываю в Safari: %@",
-                  ownerLogin, repoName, path,
-                  error.localizedDescription.length > 0 ? error.localizedDescription : @"пустой ответ",
-                  fallbackURL);
             openInSafari();
             return;
         }
@@ -732,8 +774,24 @@
 - (void)evaluateJavaScript:(NSString *)js {
     if (js.length == 0) return;
 
-    if (!self.isViewLoaded) return;
+    if (!self.isViewLoaded || !self.webViewDidFinishLoading) {
+        if (self.pendingJavaScript == nil) self.pendingJavaScript = [NSMutableArray array];
+        [self.pendingJavaScript addObject:js];
+        return;
+    }
+
     [self.webView stringByEvaluatingJavaScriptFromString:js];
+}
+
+- (void)flushPendingJavaScript {
+    if (self.pendingJavaScript.count == 0) return;
+
+    NSArray *queued = [self.pendingJavaScript copy];
+    [self.pendingJavaScript removeAllObjects];
+
+    for (NSString *js in queued) {
+        [self.webView stringByEvaluatingJavaScriptFromString:js];
+    }
 }
 
 @end

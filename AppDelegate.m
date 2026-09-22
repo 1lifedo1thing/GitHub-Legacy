@@ -9,6 +9,8 @@
 #import "GHThemeManager.h"
 #import "GHIconRenderer.h"
 #import "GHLocalization.h"
+#import "GHURLRouter.h"
+#import "GHAuthManager.h"
 
 NSString * const kGHAppDidEnterBackgroundNotification = @"GHAppDidEnterBackgroundNotification";
 NSString * const kGHAppWillEnterForegroundNotification = @"GHAppWillEnterForegroundNotification";
@@ -70,7 +72,47 @@ NSString * const kGHOpenReadmeStateKey = @"GHOpenReadmeState";
 
     self.pendingRestoreState = [self savedRestoreState];
 
+    NSURL *launchURL = [launchOptions objectForKey:UIApplicationLaunchOptionsURLKey];
+    if (launchURL != nil) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf routeAppURL:launchURL];
+        });
+    }
+
     return YES;
+}
+
+- (BOOL)application:(UIApplication *)application
+             openURL:(NSURL *)url
+   sourceApplication:(NSString *)sourceApplication
+          annotation:(id)annotation {
+    [self routeAppURL:url];
+    return YES;
+}
+
+- (void)routeAppURL:(NSURL *)url {
+    NSURL *githubURL = [GHURLRouter gitHubURLFromAppURL:url];
+    if (githubURL == nil) return;
+
+    NSString *login = nil;
+    if ([GHURLRouter userProfileInfoFromURL:githubURL login:&login]) {
+        NSString *currentLogin = [GHAuthManager sharedManager].currentUserLogin;
+        if (currentLogin.length > 0 && [login caseInsensitiveCompare:currentLogin] == NSOrderedSame) {
+            NSUInteger profileTabIndex = self.tabBarController.viewControllers.count - 1;
+            UINavigationController *profileNav = self.tabBarController.viewControllers[profileTabIndex];
+            [profileNav popToRootViewControllerAnimated:NO];
+            self.tabBarController.selectedIndex = profileTabIndex;
+            return;
+        }
+    }
+
+    UINavigationController *exploreNav = self.tabBarController.viewControllers.firstObject;
+    UIViewController *target = exploreNav.viewControllers.firstObject ?: exploreNav;
+
+    if ([GHURLRouter routeGitHubURL:githubURL fromViewController:target]) {
+        self.tabBarController.selectedIndex = 0;
+    }
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application {

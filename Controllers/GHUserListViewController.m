@@ -1,4 +1,6 @@
 #import "GHUserListViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "GHAPIClient.h"
 #import "GHAvatarLoader.h"
 #import "GHThemeManager.h"
@@ -25,13 +27,18 @@ static NSString * const kUserCellID = @"UserCell";
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kUserCellID];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:kUserCellID];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:GHSpinnerStyle()];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.spinner];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(load) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(load) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(load) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
@@ -57,7 +64,7 @@ static NSString * const kUserCellID = @"UserCell";
 
 - (void)load {
     if (self.login.length == 0) {
-        [self.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
         return;
     }
 
@@ -67,7 +74,7 @@ static NSString * const kUserCellID = @"UserCell";
     GHJSONCompletionBlock completion = ^(id jsonObject, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf.spinner stopAnimating];
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
         strongSelf.loadAttempted = YES;
 
         if (!error && [jsonObject isKindOfClass:[NSArray class]]) {
@@ -91,7 +98,7 @@ static NSString * const kUserCellID = @"UserCell";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kUserCellID forIndexPath:indexPath];
+    UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:kUserCellID forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
     cell.detailTextLabel.text = nil;
 

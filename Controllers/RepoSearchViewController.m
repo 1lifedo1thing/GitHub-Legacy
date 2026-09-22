@@ -1,4 +1,6 @@
 #import "RepoSearchViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "GHAPIClient.h"
 #import "RepoOverviewViewController.h"
 #import "SettingsViewController.h"
@@ -125,15 +127,20 @@ typedef NS_ENUM(NSInteger, GHSearchScope) {
     self.spinner.hidesWhenStopped = YES;
     self.navigationItem.titleView = nil;
 
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"HistoryCell"];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:@"HistoryCell"];
 
     self.settingsButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.settingsButton.frame = CGRectMake(0, 0, 30, 30);
     [self.settingsButton addTarget:self action:@selector(settingsButtonTapped) forControlEvents:UIControlEventTouchUpInside];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.settingsButton];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(themeDidChange)
@@ -210,7 +217,7 @@ typedef NS_ENUM(NSInteger, GHSearchScope) {
 - (void)handlePullToRefresh {
     NSString *query = self.searchBar.text;
     if (query.length == 0) {
-        [self.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
         return;
     }
     [self performSearchWithQuery:query];
@@ -256,7 +263,7 @@ typedef NS_ENUM(NSInteger, GHSearchScope) {
                                                                      style:UIBarButtonItemStyleDone
                                                                     target:self
                                                                     action:@selector(dismissSearchKeyboard)];
-    [hideButton setTitleTextAttributes:@{NSFontAttributeName: [UIFont boldSystemFontOfSize:15]} forState:UIControlStateNormal];
+    [hideButton setTitleTextAttributes:@{GHFontAttributeName(): [UIFont boldSystemFontOfSize:15]} forState:UIControlStateNormal];
     toolbar.items = @[flexibleSpace, hideButton];
     searchField.inputAccessoryView = toolbar;
     self.keyboardDismissToolbar = toolbar;
@@ -327,7 +334,7 @@ typedef NS_ENUM(NSInteger, GHSearchScope) {
         if (!strongSelf) return;
         [strongSelf.spinner stopAnimating];
         strongSelf.navigationItem.leftBarButtonItem = nil;
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
         strongSelf.tableView.allowsSelection = YES;
 
         if (error) {
@@ -430,7 +437,7 @@ typedef NS_ENUM(NSInteger, GHSearchScope) {
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if ([self isShowingHistory]) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"HistoryCell" forIndexPath:indexPath];
+        UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:@"HistoryCell" forIndexPath:indexPath];
         cell.backgroundColor = GHCellBackgroundColor();
         cell.detailTextLabel.text = nil;
         cell.accessoryType = UITableViewCellAccessoryNone;

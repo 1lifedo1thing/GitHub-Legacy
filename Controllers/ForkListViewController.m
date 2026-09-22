@@ -1,4 +1,6 @@
 #import "ForkListViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "GHAPIClient.h"
 #import "RepoOverviewViewController.h"
 #import "GHThemeManager.h"
@@ -81,15 +83,20 @@ static const NSInteger kSortActionSheetTag = 2;
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self.tableView registerClass:[GHStarredRepoCell class] forCellReuseIdentifier:kForkCellID];
+    [self.tableView gh_registerCellClass:[GHStarredRepoCell class] forCellReuseIdentifier:kForkCellID];
     self.tableView.tableHeaderView = [self buildHeaderView];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     self.spinner.hidesWhenStopped = YES;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.spinner];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(reloadForks) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(reloadForks) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(reloadForks) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
@@ -144,7 +151,12 @@ static const NSInteger kSortActionSheetTag = 2;
     button.layer.borderWidth = 1.0;
     button.titleLabel.font = [UIFont boldSystemFontOfSize:13];
     button.titleLabel.adjustsFontSizeToFitWidth = YES;
-    button.titleLabel.minimumScaleFactor = 0.7;
+
+    if ([button.titleLabel respondsToSelector:@selector(setMinimumScaleFactor:)]) {
+        button.titleLabel.minimumScaleFactor = 0.7;
+    } else {
+        button.titleLabel.minimumFontSize = 13.0 * 0.7;
+    }
     button.contentEdgeInsets = UIEdgeInsetsMake(0, 6, 0, 6);
     return button;
 }
@@ -259,10 +271,7 @@ static const NSInteger kSortActionSheetTag = 2;
     NSString *createdAt = [fork[@"created_at"] isKindOfClass:[NSString class]] ? fork[@"created_at"] : nil;
     if (createdAt.length == 0) return YES;
 
-    NSDateFormatter *isoFormatter = [[NSDateFormatter alloc] init];
-    isoFormatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-    isoFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    isoFormatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSDateFormatter *isoFormatter = GHISODateFormatter();
     NSDate *date = [isoFormatter dateFromString:createdAt];
     if (!date) return YES;
 
@@ -296,7 +305,7 @@ static const NSInteger kSortActionSheetTag = 2;
 
         if (error) {
             [strongSelf.spinner stopAnimating];
-            [strongSelf.refreshControl endRefreshing];
+            if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
             strongSelf.loadingMore = NO;
             strongSelf.loadAttempted = YES;
             strongSelf.loadInProgress = NO;
@@ -339,7 +348,7 @@ static const NSInteger kSortActionSheetTag = 2;
         [strongSelf.forks addObjectsFromArray:accumulator];
 
         [strongSelf.spinner stopAnimating];
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
         [strongSelf.tableView reloadData];
     }];
 }
@@ -381,7 +390,7 @@ static const NSInteger kSortActionSheetTag = 2;
         return cell;
     }
 
-    GHStarredRepoCell *cell = [tableView dequeueReusableCellWithIdentifier:kForkCellID forIndexPath:indexPath];
+    GHStarredRepoCell *cell = [tableView gh_dequeueCellWithIdentifier:kForkCellID forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
     [cell configureWithRepo:self.forks[indexPath.row]];
     return cell;

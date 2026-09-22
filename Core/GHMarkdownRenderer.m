@@ -942,7 +942,6 @@ static const NSUInteger kStackTableColumnThreshold = 3;
                                     error.localizedDescription ?: @"ошибка сети",
                                     (long)error.code]
                                  : @"пустой ответ";
-        NSLog(@"GHMarkdownRenderer: не удалось скачать картинку %@ — %@", urlString, reason);
         if (failureReason) *failureReason = reason;
         return nil;
     }
@@ -950,7 +949,6 @@ static const NSUInteger kStackTableColumnThreshold = 3;
     if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
         NSInteger statusCode = [(NSHTTPURLResponse *)response statusCode];
         if (statusCode < 200 || statusCode >= 300) {
-            NSLog(@"GHMarkdownRenderer: картинка %@ вернула HTTP %ld", urlString, (long)statusCode);
             if (failureReason) *failureReason = [NSString stringWithFormat:@"HTTP %ld", (long)statusCode];
             return nil;
         }

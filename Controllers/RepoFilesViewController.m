@@ -1,4 +1,6 @@
 #import "RepoFilesViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "GHAPIClient.h"
 #import "GHThemeManager.h"
 #import "GHLocalization.h"
@@ -26,7 +28,7 @@ static NSString * const kFileCellID = @"RepoFileCell";
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kFileCellID];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:kFileCellID];
 
     if (self.title.length == 0) {
         self.title = self.path.length > 0 ? [self.path lastPathComponent] : self.repoName;
@@ -43,8 +45,13 @@ static NSString * const kFileCellID = @"RepoFileCell";
     self.emptyLabel.backgroundColor = [UIColor clearColor];
     self.emptyLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(loadContents) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(loadContents) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(loadContents) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
@@ -82,7 +89,7 @@ static NSString * const kFileCellID = @"RepoFileCell";
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         [strongSelf.spinner stopAnimating];
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
 
         if (error) {
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:GHL(@"Ошибка")
@@ -395,12 +402,18 @@ static const NSInteger kCodeChunkSize = 300;
 
     NSString *css =
         @"html,body{-webkit-text-size-adjust:100%;overflow-x:hidden;}"
+
         "body{font-family:-apple-system,Helvetica;font-size:14px;color:#1f2328;margin:0;padding:0;}"
-        ".code-block{display:-webkit-box;display:flex;-webkit-box-orient:horizontal;font-family:Menlo,monospace;font-size:12px;line-height:1.6;}"
-        ".code-gutter{-webkit-box-flex:0;flex:0 0 auto;background:#f6f8fa;color:#59636e;text-align:right;border-right:1px solid #d0d7de;-webkit-text-size-adjust:100%;}"
+        ".code-block{position:relative;font-family:Menlo,monospace;font-size:12px;line-height:1.6;}"
+        ".code-gutter{position:absolute;left:0;top:0;width:53px;"
+        "-webkit-box-sizing:border-box;box-sizing:border-box;"
+        "background:#f6f8fa;color:#59636e;text-align:right;border-right:1px solid #d0d7de;"
+        "-webkit-text-size-adjust:100%;}"
         ".code-gutter .ln-row{padding:1px 8px;white-space:nowrap;}"
-        ".code-area{-webkit-box-flex:1;flex:1 1 auto;overflow-x:auto;min-width:0;-webkit-text-size-adjust:100%;}"
-        ".code-table{border-collapse:collapse;width:100%;}"
+
+        ".code-area{margin-left:53px;overflow-x:auto;overflow-y:hidden;"
+        "-webkit-overflow-scrolling:touch;-webkit-text-size-adjust:100%;}"
+        ".code-table{border-collapse:collapse;width:auto;min-width:100%;}"
         ".code-table td.code-cell{white-space:pre;padding:1px 12px;color:#1f2328;}"
 
         ".tok-comment{color:#6a737d;}"
@@ -628,7 +641,7 @@ static const NSInteger kCodeChunkSize = 300;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kFileCellID forIndexPath:indexPath];
+    UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:kFileCellID forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
     cell.textLabel.textColor = GHPrimaryTextColor();
     cell.textLabel.numberOfLines = 1;

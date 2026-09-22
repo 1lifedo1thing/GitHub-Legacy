@@ -1,4 +1,5 @@
 #import "GHThemeManager.h"
+#import "GHCompat.h"
 #import "GHIconRenderer.h"
 #import "GHLocalization.h"
 
@@ -54,7 +55,7 @@ static NSString * const kDarkModeDefaultsKey = @"GHDarkModeEnabled";
     UIColor *barBackground = self.darkModeEnabled ? [UIColor colorWithWhite:0.11 alpha:1.0] : nil;
 
     UIColor *barButtonTint = supportsBarTintColor ? (self.darkModeEnabled ? GHTintColor() : nil) : barBackground;
-    NSDictionary *titleAttrs = self.darkModeEnabled ? @{NSForegroundColorAttributeName: [UIColor whiteColor]} : nil;
+    NSDictionary *titleAttrs = self.darkModeEnabled ? @{GHForegroundColorAttributeName(): [UIColor whiteColor]} : nil;
 
     UIBarStyle barStyle = self.darkModeEnabled ? UIBarStyleBlack : UIBarStyleDefault;
     [[UINavigationBar appearance] setBarStyle:barStyle];
@@ -66,9 +67,7 @@ static NSString * const kDarkModeDefaultsKey = @"GHDarkModeEnabled";
 
     if (supportsBarTintColor) {
         [[UINavigationBar appearance] setBarTintColor:barBackground];
-        [[UINavigationBar appearance] setTranslucent:NO];
         [[UITabBar appearance] setBarTintColor:barBackground];
-        [[UITabBar appearance] setTranslucent:NO];
     }
     [[UINavigationBar appearance] setTintColor:barButtonTint];
     [[UINavigationBar appearance] setTitleTextAttributes:titleAttrs];
@@ -246,17 +245,28 @@ CGFloat GHThemedSectionHeaderHeight(NSString *title) {
 }
 
 UIView *GHSignInPlaceholderView(NSString *message, CGFloat width, id target, SEL action) {
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 140)];
+    CGFloat labelWidth = width - 40;
+    UIFont *messageFont = [UIFont systemFontOfSize:15];
+    CGSize messageSize = [message sizeWithFont:messageFont
+                              constrainedToSize:CGSizeMake(labelWidth, CGFLOAT_MAX)
+                                  lineBreakMode:NSLineBreakByWordWrapping];
+    CGFloat labelHeight = ceil(messageSize.height);
+
+    CGFloat buttonY = 24 + labelHeight + 16;
+    CGFloat headerHeight = buttonY + 30 + 16;
+
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, headerHeight)];
     header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     header.backgroundColor = [UIColor clearColor];
 
-    UILabel *messageLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 24, width - 40, 44)];
+    UILabel *messageLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 24, labelWidth, labelHeight)];
     messageLabel.text = message;
     messageLabel.textColor = GHSecondaryTextColor();
     messageLabel.backgroundColor = [UIColor clearColor];
-    messageLabel.font = [UIFont systemFontOfSize:15];
+    messageLabel.font = messageFont;
     messageLabel.textAlignment = NSTextAlignmentCenter;
     messageLabel.numberOfLines = 0;
+    messageLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:messageLabel];
 
     UIButton *openSettingsButton = [UIButton buttonWithType:UIButtonTypeRoundedRect];
@@ -265,8 +275,9 @@ UIView *GHSignInPlaceholderView(NSString *message, CGFloat width, id target, SEL
     [openSettingsButton addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
     [openSettingsButton sizeToFit];
     CGRect buttonFrame = openSettingsButton.frame;
-    buttonFrame.origin = CGPointMake((width - buttonFrame.size.width) / 2.0, 84);
+    buttonFrame.origin = CGPointMake((width - buttonFrame.size.width) / 2.0, buttonY);
     openSettingsButton.frame = buttonFrame;
+    openSettingsButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
     [header addSubview:openSettingsButton];
 
     return header;

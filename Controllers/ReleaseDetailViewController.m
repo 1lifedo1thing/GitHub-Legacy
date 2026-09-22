@@ -1,4 +1,6 @@
 #import "ReleaseDetailViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "DownloadManager.h"
 #import "GHThemeManager.h"
 #import "GHMarkdownRenderer.h"
@@ -27,7 +29,7 @@ static NSString *GHReactionEmoji(NSString *content) {
     if ([content isEqualToString:@"+1"]) return @"👍";
     if ([content isEqualToString:@"laugh"]) return @"😄";
     if ([content isEqualToString:@"hooray"]) return @"🎉";
-    if ([content isEqualToString:@"heart"]) return @"❤️";
+    if ([content isEqualToString:@"heart"]) return GHEmojiForDisplay(@"❤️");
     if ([content isEqualToString:@"rocket"]) return @"🚀";
     if ([content isEqualToString:@"eyes"]) return @"👀";
     return @"";
@@ -85,15 +87,20 @@ static const CGFloat kNotesVerticalPadding = 10.0;
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"NotesCell"];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:@"NotesCell"];
     self.reactionCounts = [NSMutableDictionary dictionary];
     self.myReactionIDs = [NSMutableDictionary dictionary];
     [self buildDownloadItems];
     [self loadReleaseNotesHTML];
     [self loadReactions];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
@@ -181,7 +188,7 @@ static const CGFloat kNotesVerticalPadding = 10.0;
 - (void)handlePullToRefresh {
     long long releaseID = [self releaseID];
     if (releaseID == 0 || self.ownerLogin.length == 0 || self.repoName.length == 0) {
-        [self.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
         return;
     }
 
@@ -192,7 +199,7 @@ static const CGFloat kNotesVerticalPadding = 10.0;
                                       completion:^(id jsonObject, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
 
         if (error || ![jsonObject isKindOfClass:[NSDictionary class]]) {
 
@@ -866,7 +873,7 @@ static const CGFloat kReactionsRowHeight = 46.0;
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == kSectionNotes && indexPath.row == kNotesRowNotes) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"NotesCell" forIndexPath:indexPath];
+        UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:@"NotesCell" forIndexPath:indexPath];
         cell.backgroundColor = GHCellBackgroundColor();
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
@@ -914,9 +921,6 @@ static const CGFloat kReactionsRowHeight = 46.0;
     cell.detailTextLabel.textColor = GHSecondaryTextColor();
     cell.accessoryType = UITableViewCellAccessoryNone;
 
-    // A dequeued cell can be reused for a row that is mid-download, so
-    // rebuild the progress view from the model instead of always clearing
-    // it - otherwise scrolling the active row offscreen and back loses it.
     if ([indexPath isEqual:self.downloadingIndexPath]) {
         cell.detailTextLabel.text = [NSString stringWithFormat:GHL(@"Скачивание: %.0f%%"), item.downloadProgress * 100];
 

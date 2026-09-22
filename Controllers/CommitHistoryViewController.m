@@ -1,4 +1,6 @@
 #import "CommitHistoryViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "CommitDetailViewController.h"
 #import "GHAPIClient.h"
 #import "GHAvatarLoader.h"
@@ -59,8 +61,13 @@ static const NSInteger kCommitsPerPage = 30;
     self.spinner.hidesWhenStopped = YES;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.spinner];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(loadCommits) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(loadCommits) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(loadCommits) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
@@ -104,7 +111,7 @@ static const NSInteger kCommitsPerPage = 30;
     [[GHAPIClient sharedClient] commitsForOwner:self.ownerLogin repo:self.repoName page:1 completion:^(id jsonObject, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf.spinner stopAnimating];
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
 
         if (error) {
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:GHL(@"Ошибка")
@@ -163,10 +170,7 @@ static const NSInteger kCommitsPerPage = 30;
 - (NSString *)relativeDateStringFromISOString:(NSString *)isoString {
     if (isoString.length == 0) return @"";
 
-    NSDateFormatter *isoFormatter = [[NSDateFormatter alloc] init];
-    isoFormatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-    isoFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    isoFormatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSDateFormatter *isoFormatter = GHISODateFormatter();
 
     NSDate *date = [isoFormatter dateFromString:isoString];
     if (!date) return @"";

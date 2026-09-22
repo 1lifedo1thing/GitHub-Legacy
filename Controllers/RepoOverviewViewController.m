@@ -1,4 +1,6 @@
 #import "RepoOverviewViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "RepoDetailViewController.h"
 #import "CommitHistoryViewController.h"
 #import "CommitDetailViewController.h"
@@ -134,15 +136,20 @@ static const NSInteger kMoreSectionsRowCount = 2;
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"Cell"];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:@"Cell"];
 
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"ReadmeCell"];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:@"ReadmeCell"];
     [self fetchRepoDetailIfNeeded];
     [self fetchReadme];
     [self fetchStarStatusIfNeeded];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(handlePullToRefresh) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
@@ -253,14 +260,14 @@ static const NSInteger kMoreSectionsRowCount = 2;
     NSString *repoName = [self repoName];
 
     if (ownerLogin.length == 0 || repoName.length == 0) {
-        [self.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
         return;
     }
 
     __weak typeof(self) weakSelf = self;
     [[GHAPIClient sharedClient] repoDetailForOwner:ownerLogin repo:repoName completion:^(id jsonObject, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
 
         if (!error && [jsonObject isKindOfClass:[NSDictionary class]]) {
             strongSelf.repo = jsonObject;
@@ -662,6 +669,18 @@ static const NSInteger kMoreSectionsRowCount = 2;
             return NO;
         }
 
+        NSString *latestOwner, *latestRepo;
+        if ([RepoDetailViewController latestReleaseInfoFromURL:request.URL ownerLogin:&latestOwner repoName:&latestRepo]) {
+            [RepoDetailViewController pushLatestReleaseForOwnerLogin:latestOwner repoName:latestRepo fromViewController:self];
+            return NO;
+        }
+
+        NSString *tagOwner, *tagRepo, *tagName;
+        if ([RepoDetailViewController releaseByTagInfoFromURL:request.URL ownerLogin:&tagOwner repoName:&tagRepo tag:&tagName]) {
+            [RepoDetailViewController pushReleaseForOwnerLogin:tagOwner repoName:tagRepo tag:tagName fromViewController:self];
+            return NO;
+        }
+
         NSString *releaseOwner, *releaseRepo;
         if ([RepoDetailViewController releaseListInfoFromURL:request.URL ownerLogin:&releaseOwner repoName:&releaseRepo]) {
             RepoDetailViewController *releasesVC = [[RepoDetailViewController alloc] init];
@@ -802,6 +821,12 @@ static const NSInteger kMoreSectionsRowCount = 2;
             strongSelf.isStarred = !wasStarred;
         } else {
             NSString *detail = message.length > 0 ? message : (error.localizedDescription ?: GHL(@"неизвестная ошибка"));
+
+            if (!error && statusCode == 404) {
+                detail = [detail stringByAppendingFormat:@"\n\n%@",
+                    GHL(@"Возможно, у вашего токена нет прав на звёздочки. Для classic-токена нужен scope «public_repo», для fine-grained — разрешение «Starring».")];
+            }
+
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:[NSString stringWithFormat:GHL(@"Ошибка (HTTP %ld)"), (long)statusCode]
                                                              message:detail
                                                             delegate:nil
@@ -867,17 +892,12 @@ static const NSInteger kMoreSectionsRowCount = 2;
 - (NSString *)displayDateFromISOString:(NSString *)isoString {
     if (isoString.length == 0) return nil;
 
-    NSDateFormatter *isoFormatter = [[NSDateFormatter alloc] init];
-    isoFormatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-    isoFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    isoFormatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSDateFormatter *isoFormatter = GHISODateFormatter();
 
     NSDate *date = [isoFormatter dateFromString:isoString];
     if (!date) return nil;
 
-    NSDateFormatter *displayFormatter = [[NSDateFormatter alloc] init];
-    displayFormatter.dateStyle = NSDateFormatterMediumStyle;
-    displayFormatter.timeStyle = NSDateFormatterNoStyle;
+    NSDateFormatter *displayFormatter = GHMediumDateFormatter();
     return [displayFormatter stringFromDate:date];
 }
 
@@ -1035,7 +1055,7 @@ static const NSInteger kMoreSectionsRowCount = 2;
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     NSString *identifier = (indexPath.section == kSectionReadme) ? @"ReadmeCell" : @"Cell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier forIndexPath:indexPath];
+    UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:identifier forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
     cell.accessoryType = UITableViewCellAccessoryNone;
 

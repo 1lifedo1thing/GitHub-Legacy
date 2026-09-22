@@ -1,4 +1,6 @@
 #import "ExploreViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import "GHAPIClient.h"
 #import "GHAuthManager.h"
 #import "ReleaseDetailViewController.h"
@@ -30,7 +32,13 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
 @property (nonatomic, strong) UIButton *settingsButton;
 @property (nonatomic, assign) BOOL loadAttempted;
 @property (nonatomic, assign) NSInteger pendingReleaseRequests;
+@property (nonatomic, strong) NSMutableArray *releaseRequestQueue;
+@property (nonatomic, strong) NSMutableArray *releaseRequestResults;
+@property (nonatomic, assign) NSUInteger feedLoadGeneration;
 @end
+
+static const NSUInteger kMaxConcurrentReleaseRequests = 4;
+
 
 @implementation ExploreViewController
 
@@ -45,8 +53,8 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kPlaceholderCellID];
-    [self.tableView registerClass:[GHExploreFeedCell class] forCellReuseIdentifier:kExploreCellID];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:kPlaceholderCellID];
+    [self.tableView gh_registerCellClass:[GHExploreFeedCell class] forCellReuseIdentifier:kExploreCellID];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     self.spinner.hidesWhenStopped = YES;
@@ -57,14 +65,27 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
     [self.settingsButton addTarget:self action:@selector(settingsButtonTapped) forControlEvents:UIControlEventTouchUpInside];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.settingsButton];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                               selector:@selector(applyTheme)
                                                   name:kGHThemeDidChangeNotification
                                                 object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                              selector:@selector(handleLanguageDidChange)
+                                                  name:kGHLanguageDidChangeNotification
+                                                object:nil];
     [self applyTheme];
+}
+
+- (void)handleLanguageDidChange {
+    self.title = GHL(@"Обзор");
 }
 
 - (void)settingsButtonTapped {
@@ -107,6 +128,16 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
     [self.tableView reloadData];
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+
+    if (![GHAuthManager sharedManager].isAuthenticated &&
+        self.tableView.tableHeaderView != nil &&
+        fabs(self.tableView.tableHeaderView.frame.size.width - self.tableView.bounds.size.width) > 0.5) {
+        [self updateSignInHeader];
+    }
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
 
@@ -130,10 +161,13 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
 
     [self loadTrendingReposIfNeeded];
 
+    self.feedLoadGeneration++;
+    NSUInteger generation = self.feedLoadGeneration;
+
     if (![GHAuthManager sharedManager].isAuthenticated) {
         [self.feedEntries removeAllObjects];
         self.loadAttempted = YES;
-        [self.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
         [self.tableView reloadData];
         return;
     }
@@ -142,11 +176,11 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
     __weak typeof(self) weakSelf = self;
     [[GHAPIClient sharedClient] starredRepositoriesWithCompletion:^(id jsonObject, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) return;
+        if (!strongSelf || strongSelf.feedLoadGeneration != generation) return;
 
         if (error) {
             [strongSelf.spinner stopAnimating];
-            [strongSelf.refreshControl endRefreshing];
+            if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
             strongSelf.loadAttempted = YES;
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:GHL(@"Ошибка")
                                                              message:error.localizedDescription
@@ -161,57 +195,74 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
         NSArray *starredRepos = [jsonObject isKindOfClass:[NSArray class]] ? jsonObject : @[];
         if (starredRepos.count == 0) {
             [strongSelf.spinner stopAnimating];
-            [strongSelf.refreshControl endRefreshing];
+            if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
             strongSelf.loadAttempted = YES;
             [strongSelf.feedEntries removeAllObjects];
             [strongSelf.tableView reloadData];
             return;
         }
 
-        [strongSelf fetchLatestReleasesForRepos:starredRepos];
+        [strongSelf fetchLatestReleasesForRepos:starredRepos generation:generation];
     }];
 }
 
-- (void)fetchLatestReleasesForRepos:(NSArray *)starredRepos {
+- (void)fetchLatestReleasesForRepos:(NSArray *)starredRepos generation:(NSUInteger)generation {
     NSMutableArray *collected = [NSMutableArray array];
     self.pendingReleaseRequests = starredRepos.count;
+    self.releaseRequestQueue = [starredRepos mutableCopy];
+    self.releaseRequestResults = collected;
+
+    NSInteger initialBatch = MIN((NSInteger)kMaxConcurrentReleaseRequests, (NSInteger)starredRepos.count);
+    for (NSInteger i = 0; i < initialBatch; i++) {
+        [self gh_startNextReleaseRequestForGeneration:generation];
+    }
+}
+
+- (void)gh_startNextReleaseRequestForGeneration:(NSUInteger)generation {
+    if (self.feedLoadGeneration != generation) return;
+    if (self.releaseRequestQueue.count == 0) return;
+
+    NSDictionary *repo = [self.releaseRequestQueue objectAtIndex:0];
+    [self.releaseRequestQueue removeObjectAtIndex:0];
+
+    NSDictionary *owner = [self safeDictForKey:@"owner" inDict:repo];
+    NSString *ownerLogin = [self safeStringForKey:@"login" inDict:owner];
+    NSString *repoName = [self safeStringForKey:@"name" inDict:repo];
 
     __weak typeof(self) weakSelf = self;
-    for (NSDictionary *repo in starredRepos) {
-        NSDictionary *owner = [self safeDictForKey:@"owner" inDict:repo];
-        NSString *ownerLogin = [self safeStringForKey:@"login" inDict:owner];
-        NSString *repoName = [self safeStringForKey:@"name" inDict:repo];
-
-        void (^stepDone)(void) = ^{
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            strongSelf.pendingReleaseRequests--;
-            if (strongSelf.pendingReleaseRequests <= 0) {
-                [strongSelf finishFeedWithEntries:collected];
-            }
-        };
-
-        if (ownerLogin.length == 0 || repoName.length == 0) {
-            stepDone();
-            continue;
+    void (^stepDone)(void) = ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.feedLoadGeneration != generation) return;
+        strongSelf.pendingReleaseRequests--;
+        if (strongSelf.pendingReleaseRequests <= 0) {
+            [strongSelf finishFeedWithEntries:strongSelf.releaseRequestResults];
+        } else {
+            [strongSelf gh_startNextReleaseRequestForGeneration:generation];
         }
+    };
 
-        [[GHAPIClient sharedClient] releasesForOwner:ownerLogin repo:repoName completion:^(id jsonObject, NSError *error) {
-            __strong typeof(weakSelf) strongSelfInner = weakSelf;
-            if (strongSelfInner && !error && [jsonObject isKindOfClass:[NSArray class]] && [jsonObject count] > 0) {
-                id latestRelease = jsonObject[0];
-                if ([latestRelease isKindOfClass:[NSDictionary class]]) {
-                    NSString *publishedAt = [strongSelfInner safeStringForKey:@"published_at" inDict:latestRelease];
+    if (ownerLogin.length == 0 || repoName.length == 0) {
+        stepDone();
+        return;
+    }
 
-                    if (publishedAt.length > 0) {
-                        [collected addObject:@{@"repo": repo, @"release": latestRelease}];
-                    }
+    NSMutableArray *collected = self.releaseRequestResults;
+    [[GHAPIClient sharedClient] releasesForOwner:ownerLogin repo:repoName completion:^(id jsonObject, NSError *error) {
+        __strong typeof(weakSelf) strongSelfInner = weakSelf;
+        if (strongSelfInner && strongSelfInner.feedLoadGeneration == generation &&
+            !error && [jsonObject isKindOfClass:[NSArray class]] && [jsonObject count] > 0) {
+            id latestRelease = jsonObject[0];
+            if ([latestRelease isKindOfClass:[NSDictionary class]]) {
+                NSString *publishedAt = [strongSelfInner safeStringForKey:@"published_at" inDict:latestRelease];
+
+                if (publishedAt.length > 0) {
+                    [collected addObject:@{@"repo": repo, @"release": latestRelease}];
                 }
             }
+        }
 
-            stepDone();
-        }];
-    }
+        stepDone();
+    }];
 }
 
 - (void)finishFeedWithEntries:(NSMutableArray *)collected {
@@ -225,17 +276,14 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
     self.feedEntries = collected;
     self.loadAttempted = YES;
     [self.spinner stopAnimating];
-    [self.refreshControl endRefreshing];
+    if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
     [self.tableView reloadData];
 }
 
 - (NSString *)relativeDateStringFromISOString:(NSString *)isoString {
     if (isoString.length == 0) return @"";
 
-    NSDateFormatter *isoFormatter = [[NSDateFormatter alloc] init];
-    isoFormatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-    isoFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    isoFormatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSDateFormatter *isoFormatter = GHISODateFormatter();
 
     NSDate *date = [isoFormatter dateFromString:isoString];
     if (!date) return @"";
@@ -301,7 +349,7 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
     BOOL hasRealEntry = self.feedEntries.count > 0;
 
     if (!hasRealEntry) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kPlaceholderCellID forIndexPath:indexPath];
+        UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:kPlaceholderCellID forIndexPath:indexPath];
         cell.backgroundColor = GHCellBackgroundColor();
         cell.accessoryType = UITableViewCellAccessoryNone;
         cell.textLabel.numberOfLines = 0;
@@ -314,7 +362,7 @@ typedef NS_ENUM(NSInteger, GHExploreSection) {
         return cell;
     }
 
-    GHExploreFeedCell *cell = [tableView dequeueReusableCellWithIdentifier:kExploreCellID forIndexPath:indexPath];
+    GHExploreFeedCell *cell = [tableView gh_dequeueCellWithIdentifier:kExploreCellID forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
 
     NSDictionary *entry = self.feedEntries[indexPath.row];

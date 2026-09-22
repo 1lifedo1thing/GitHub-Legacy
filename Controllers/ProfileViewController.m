@@ -1,4 +1,6 @@
 #import "ProfileViewController.h"
+#import "GHCompat.h"
+#import "GHLegacyRefreshControl.h"
 #import <QuartzCore/QuartzCore.h>
 #import "GHAPIClient.h"
 #import "GHAuthManager.h"
@@ -64,8 +66,8 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kProfileRepoCellID];
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kProfilePinnedCellID];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:kProfileRepoCellID];
+    [self.tableView gh_registerCellClass:[UITableViewCell class] forCellReuseIdentifier:kProfilePinnedCellID];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     self.spinner.hidesWhenStopped = YES;
@@ -76,8 +78,13 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
     [self.settingsButton addTarget:self action:@selector(settingsButtonTapped) forControlEvents:UIControlEventTouchUpInside];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.settingsButton];
 
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    if (GHPullToRefreshAvailable()) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    } else {
+        self.gh_legacyRefreshControl = [GHLegacyRefreshControl gh_attachToScrollView:self.tableView];
+        [self.gh_legacyRefreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    }
 
     [self buildHeaderSubviews];
 
@@ -203,12 +210,12 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
     NSString *text = [NSString stringWithFormat:@"%@ %@", safeCount, caption];
     NSMutableAttributedString *attributed = [[NSMutableAttributedString alloc] initWithString:text];
     NSRange countRange = NSMakeRange(0, [safeCount stringValue].length);
-    [attributed addAttribute:NSFontAttributeName value:[UIFont boldSystemFontOfSize:14] range:countRange];
-    [attributed addAttribute:NSForegroundColorAttributeName value:GHPrimaryTextColor() range:countRange];
-    [attributed addAttribute:NSForegroundColorAttributeName
+    [attributed addAttribute:GHFontAttributeName() value:[UIFont boldSystemFontOfSize:14] range:countRange];
+    [attributed addAttribute:GHForegroundColorAttributeName() value:GHPrimaryTextColor() range:countRange];
+    [attributed addAttribute:GHForegroundColorAttributeName()
                         value:GHProfileHeaderSecondaryTextColor()
                         range:NSMakeRange(countRange.length, text.length - countRange.length)];
-    [button setAttributedTitle:attributed forState:UIControlStateNormal];
+    [button gh_setAttributedTitle:attributed forState:UIControlStateNormal];
     [button sizeToFit];
 }
 
@@ -219,7 +226,7 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
         [self.pinnedRepos removeAllObjects];
         self.starredCount = 0;
         self.starredCountLoaded = NO;
-        [self.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [self.refreshControl endRefreshing]; } else { [self.gh_legacyRefreshControl endRefreshing]; }
         [self layoutHeaderForAuthenticated:NO loading:NO];
         [self.tableView reloadData];
         return;
@@ -234,6 +241,10 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
         if (!error && [jsonObject isKindOfClass:[NSDictionary class]]) {
             strongSelf.userInfo = jsonObject;
             [strongSelf loadAvatar];
+            NSString *login = [strongSelf safeStringForKey:@"login" inDict:jsonObject];
+            if (login.length > 0) {
+                [GHAuthManager sharedManager].currentUserLogin = login;
+            }
         }
         [strongSelf layoutHeaderForAuthenticated:YES loading:NO];
     }];
@@ -253,7 +264,7 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
     [[GHAPIClient sharedClient] repositoriesForCurrentUserWithCompletion:^(id jsonObject, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf.spinner stopAnimating];
-        [strongSelf.refreshControl endRefreshing];
+        if (GHPullToRefreshAvailable()) { [strongSelf.refreshControl endRefreshing]; } else { [strongSelf.gh_legacyRefreshControl endRefreshing]; }
 
         if (error) {
             UIAlertView *alert = [[UIAlertView alloc] initWithTitle:GHL(@"Ошибка")
@@ -316,9 +327,6 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
                     [strongSelf.pinnedRepos addObject:[strongSelf normalizedRepoFromGraphQLNode:node]];
                 }
             }
-        } else if (error) {
-
-            NSLog(@"[GitHubLegacy] Не удалось загрузить закреплённые репозитории: %@", error.localizedDescription);
         }
 
         [strongSelf.tableView reloadData];
@@ -521,9 +529,10 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
     [rounded fill];
 
     UIFont *font = [UIFont systemFontOfSize:16];
-    CGSize textSize = [emoji sizeWithFont:font];
+    NSString *glyph = GHEmojiForDisplay(emoji);
+    CGSize textSize = [glyph sizeWithFont:font];
     CGPoint origin = CGPointMake((size - textSize.width) / 2.0, (size - textSize.height) / 2.0);
-    [emoji drawAtPoint:origin withFont:font];
+    [glyph drawAtPoint:origin withFont:font];
 
     UIImage *result = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
@@ -559,7 +568,7 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if ([self hasPinnedSection] && indexPath.section == [self pinnedSectionIndex]) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kProfilePinnedCellID forIndexPath:indexPath];
+        UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:kProfilePinnedCellID forIndexPath:indexPath];
         cell.backgroundColor = GHCellBackgroundColor();
         cell.textLabel.numberOfLines = 1;
 
@@ -578,7 +587,7 @@ static NSString * const kProfilePinnedCellID = @"ProfilePinnedCell";
         return cell;
     }
 
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kProfileRepoCellID forIndexPath:indexPath];
+    UITableViewCell *cell = [tableView gh_dequeueCellWithIdentifier:kProfileRepoCellID forIndexPath:indexPath];
     cell.backgroundColor = GHCellBackgroundColor();
     cell.textLabel.numberOfLines = 1;
     cell.detailTextLabel.text = nil;

@@ -26,6 +26,15 @@ typedef void (^GHStatusCompletionBlock)(NSInteger statusCode, NSString *message,
                releaseID:(long long)releaseID
               completion:(GHJSONCompletionBlock)completion;
 
+- (void)latestReleaseForOwner:(NSString *)owner
+                          repo:(NSString *)repo
+                    completion:(GHJSONCompletionBlock)completion;
+
+- (void)releaseForOwner:(NSString *)owner
+                    repo:(NSString *)repo
+                     tag:(NSString *)tag
+              completion:(GHJSONCompletionBlock)completion;
+
 - (void)forksForOwner:(NSString *)owner
                    repo:(NSString *)repo
                    sort:(NSString *)sort

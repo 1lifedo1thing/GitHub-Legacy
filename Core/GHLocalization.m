@@ -75,8 +75,8 @@ static NSDictionary *GHTranslations(void) {
             @"Не удалось войти — проверьте правильность токена и его срок действия.":
                 @"Couldn't sign in — check that the token is correct and hasn't expired.",
             @"GitHub Legacy": @"GitHub Legacy",
-            @"Лёгкий нативный клиент GitHub для iOS 6–10: репозитории, README на нескольких языках, issues, pull request'ы, коммиты и релизы — без Safari и без официального приложения, которое на этих версиях уже не запустить.\n\nmade by kitalev":
-                @"A lightweight native GitHub client for iOS 6–10: repositories, README in multiple languages, issues, pull requests, commits, and releases — without Safari, and without the official app, which no longer runs on these versions.\n\nmade by kitalev",
+            @"Лёгкий нативный клиент GitHub для iOS 5–10: репозитории, README на нескольких языках, issues, pull request'ы, коммиты и релизы — без Safari и без официального приложения, которое на этих версиях уже не запустить.\n\nmade by kitalev":
+                @"A lightweight native GitHub client for iOS 5–10: repositories, README in multiple languages, issues, pull requests, commits, and releases — without Safari, and without the official app, which no longer runs on these versions.\n\nmade by kitalev",
 
             @"GitHub Search": @"GitHub Search",
             @"Search": @"Search",
@@ -240,6 +240,31 @@ static NSDictionary *GHTranslations(void) {
 
             @"Нужен вход": @"Sign-in required",
             @"Чтобы оставить реакцию, войдите в аккаунт в настройках.": @"Sign in from Settings to leave a reaction.",
+
+            @"Потяните, чтобы обновить": @"Pull to refresh",
+            @"Отпустите, чтобы обновить": @"Release to refresh",
+            @"Обновление…": @"Refreshing…",
+
+            @"Возможно, у вашего токена нет прав на звёздочки. Для classic-токена нужен scope «public_repo», для fine-grained — разрешение «Starring».": @"Your token may not have permission to star repositories. Classic tokens need the \"public_repo\" scope; fine-grained tokens need the \"Starring\" permission.",
+            @"Возможно, у вашего токена нет прав на подписки. Для classic-токена нужен scope «user:follow», для fine-grained — разрешение «Followers».": @"Your token may not have permission to follow users. Classic tokens need the \"user:follow\" scope; fine-grained tokens need the \"Followers\" permission.",
+
+            @"Поиск по задачам": @"Search issues",
+            @"Поиск по pull request'ам": @"Search pull requests",
+            @"Ничего не найдено": @"Nothing found",
+            @"Поиск…": @"Searching…",
+
+            @"Ссылки GitHub": @"GitHub Links",
+            @"Переадресация": @"Redirect",
+            @"Ссылки github.com из Safari и других приложений будут открываться здесь": @"github.com links from Safari and other apps will open here",
+            @"Не удалось сохранить настройку — нет доступа на запись к файлу настроек.": @"Couldn't save the setting — no write access to the preferences file.",
+
+            @"Проверить обновления": @"Check for Updates",
+            @"Обновления": @"Updates",
+            @"Не удалось проверить обновления. Попробуйте позже.": @"Couldn't check for updates. Try again later.",
+            @"Установлена последняя версия.": @"You're on the latest version.",
+            @"Доступно обновление": @"Update Available",
+            @"Доступна версия %@. Текущая — %@.": @"Version %@ is available. You have %@.",
+            @"Позже": @"Later",
         };
     });
     return translations;
